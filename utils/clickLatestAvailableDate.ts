@@ -15,7 +15,6 @@ export async function clickLatestAvailableDate() {
   // Get the date 5 days from now
   futureDate.setDate(futureDate.getDate() + 5);
 
-  // NOTE: months are 0-based, so add 1 if the site expects human months
   const formattedDate = `${futureDate.getFullYear()}/${futureDate.getMonth()}/${futureDate.getDate()}`;
 
   const date = await find(By.css(`a[data-value="${formattedDate}"]`));
