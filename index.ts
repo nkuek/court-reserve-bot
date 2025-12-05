@@ -147,7 +147,6 @@ if (adjustedDurationMs < 0) {
 const endTime = new Date(start.getTime() + adjustedDurationMs);
 
 const END_TIME = to12Hour(endTime);
-console.log(RESERVATION_TIME, END_TIME);
 
 const COURTS = [
   "Pickleball Court 5C (Bubble B)",
@@ -167,7 +166,6 @@ const driver = await new Builder().forBrowser(Browser.CHROME).build();
 async function login() {
   const email = process.env.EMAIL as string | undefined;
   const password = process.env.PASSWORD as string | undefined;
-  console.log(email, password);
   if (email === undefined || password === undefined) {
     throw new Error("Missing EMAIL or PASSWORD environment variables.");
   }
