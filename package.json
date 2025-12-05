@@ -1,0 +1,18 @@
+{
+  "name": "selenium",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@types/minimist": "^1.2.5",
+    "@types/selenium-webdriver": "^4.35.4",
+    "minimist": "^1.2.8",
+    "selenium-webdriver": "^4.38.0"
+  }
+}
