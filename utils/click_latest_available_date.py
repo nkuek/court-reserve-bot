@@ -29,8 +29,6 @@ def click_latest_available_date():
     # The original JS uses: futureDate.getMonth() which is 0-indexed
     formatted_date = f"{future_date.year}/{future_date.month - 1}/{future_date.day}"
     
-    print(f"Formatted date to select: {actual_date}")
-
     date_element = find((By.CSS_SELECTOR, f'a[data-value="{formatted_date}"]'), timeout=10)
     print(f"Clicking on date: {actual_date}")
     date_element.click()
