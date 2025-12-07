@@ -1,6 +1,8 @@
 import os
 import time
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,6 +28,12 @@ def login():
     inputs[0].send_keys(email)
     inputs[1].send_keys(password)
 
+    print("Submitting login form...")
     form.submit()
-    print("Logging in...")
-    time.sleep(1)
+
+    # Wait for login to complete by checking URL no longer contains /Login
+    print("Waiting for login to complete...")
+    WebDriverWait(driver, 30).until(
+        EC.url_changes(f"{BASE_URL}/Account/Login")
+    )
+    print(f"Login complete. Current URL: {driver.current_url}")
