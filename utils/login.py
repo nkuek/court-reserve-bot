@@ -16,6 +16,7 @@ def login():
     if not email or not password:
         raise ValueError("Missing EMAIL or PASSWORD environment variables.")
 
+    print("Navigating to login page...")
     driver.get(f"{BASE_URL}/Account/Login")
     time.sleep(2)  # Wait for page to fully load
 
@@ -26,4 +27,5 @@ def login():
     inputs[1].send_keys(password)
 
     form.submit()
+    print("Logging in...")
     time.sleep(1)

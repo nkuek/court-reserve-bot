@@ -11,9 +11,11 @@ from utils.find import find
 
 def click_latest_available_date():
     """Navigate to bookings page and select the date 5 days from now."""
+    print("Navigating to bookings page...")
     driver.get(f"{BASE_URL}/Online/Reservations/Bookings/8449?sId=18493")
     time.sleep(1)
 
+    print("Selecting date 5 days from now...")
     date_picker = find((By.CSS_SELECTOR, 'a[data-testid="link-0"]'))
     date_picker.click()
 
@@ -26,4 +28,5 @@ def click_latest_available_date():
     formatted_date = f"{future_date.year}/{future_date.month - 1}/{future_date.day}"
 
     date_element = find((By.CSS_SELECTOR, f'a[data-value="{formatted_date}"]'))
+    print(f"Clicking on date: {formatted_date}")
     date_element.click()
