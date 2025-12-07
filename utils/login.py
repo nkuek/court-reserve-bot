@@ -17,8 +17,9 @@ def login():
         raise ValueError("Missing EMAIL or PASSWORD environment variables.")
 
     driver.get(f"{BASE_URL}/Account/Login")
+    time.sleep(2)  # Wait for page to fully load
 
-    form = find((By.CSS_SELECTOR, "form"))
+    form = find((By.CSS_SELECTOR, "form"), timeout=15)
     inputs = form.find_elements(By.TAG_NAME, "input")
 
     inputs[0].send_keys(email)

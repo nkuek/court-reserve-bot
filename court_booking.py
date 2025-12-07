@@ -134,7 +134,7 @@ def add_duration(duration_hours: float):
 
 
 def click_save_button(target_time: datetime):
-    """Wait until target time and click the save button."""
+    """Wait until target time and click the save button with high precision."""
     print('Attempting to click "Save" button at target time...')
     save_button = find((By.CSS_SELECTOR, 'button[data-testid="Save"]'))
 
@@ -149,10 +149,20 @@ def click_save_button(target_time: datetime):
         seconds = int(delay % 60)
         print(f'Waiting {hours} hours {minutes} minutes {seconds} seconds until target time to click "Save"...')
 
-    time.sleep(delay)
+        # Sleep until 100ms before target (sleep is imprecise)
+        if delay > 0.1:
+            time.sleep(delay - 0.1)
 
-    save_button.click()
-    print('Clicked "Save" button!')
+        # Busy-wait (spin loop) for precise timing in the final milliseconds
+        while datetime.now() < target_time:
+            pass
+
+    # Use JavaScript click for faster execution (bypasses Selenium overhead)
+    driver.execute_script("arguments[0].click();", save_button)
+
+    click_time = datetime.now()
+    diff_ms = (click_time - target_time).total_seconds() * 1000
+    print(f'Clicked "Save" button! (actual: {click_time.strftime("%H:%M:%S.%f")[:-3]}, diff: {diff_ms:+.1f}ms)')
     time.sleep(1)
 
 
@@ -167,7 +177,7 @@ def check_court_availability(court: str, reservation_time: str, end_time: str):
                 f"//button[@data-courtlabel='{court}' and contains(text(), '{reservation_time}')]",
             )
         )
-        print(f'Found time slot for court "{court}" at {reservation_time}')
+        print(f'Found time slot for court "{court}" at {reservation_time} on {target.strftime("%Y-%m-%d")}')
 
         # Verify the time slot is available by checking the end time
         find(
@@ -264,7 +274,8 @@ def main():
             print(f'Failed on court "{court}": {err}')
             # Continue to next court
 
-driver.quit()
+    driver.quit()
+
 
 if __name__ == "__main__":
     main()
