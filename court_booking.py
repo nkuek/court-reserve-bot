@@ -147,11 +147,27 @@ def click_save_button(target_time: datetime):
         hours = int(delay // 3600)
         minutes = int((delay % 3600) // 60)
         seconds = int(delay % 60)
-        print(f'Waiting {hours} hours {minutes} minutes {seconds} seconds until target time to click "Save"...')
+        print(f'Waiting {hours}h {minutes}m {seconds}s until target time ({target_time.strftime("%H:%M:%S")})...')
 
-        # Sleep until 100ms before target (sleep is imprecise)
-        if delay > 0.1:
-            time.sleep(delay - 0.1)
+        # Countdown with live updates every second
+        while True:
+            remaining = (target_time - datetime.now()).total_seconds()
+            if remaining <= 0.1:
+                break
+
+            hours = int(remaining // 3600)
+            minutes = int((remaining % 3600) // 60)
+            seconds = int(remaining % 60)
+
+            # \r moves cursor to start of line, end="" prevents newline
+            print(f'\r⏱️  {hours:02d}:{minutes:02d}:{seconds:02d} remaining...', end='', flush=True)
+
+            # Sleep for ~1 second, but check more frequently near the end
+            sleep_time = min(1.0, remaining - 0.1)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+        print()  # Newline after countdown
 
         # Busy-wait (spin loop) for precise timing in the final milliseconds
         while datetime.now() < target_time:
@@ -169,6 +185,7 @@ def click_save_button(target_time: datetime):
 def check_court_availability(court: str, reservation_time: str, end_time: str):
     """Check if a court is available at the specified time."""
     print(f"Trying court: {court}")
+    print(f"Looking for time: '{reservation_time}'")
 
     try:
         start_time_btn = find(
@@ -177,7 +194,7 @@ def check_court_availability(court: str, reservation_time: str, end_time: str):
                 f"//button[@data-courtlabel='{court}' and contains(text(), '{reservation_time}')]",
             )
         )
-        print(f'Found time slot for court "{court}" at {reservation_time} on {target.strftime("%Y-%m-%d")}')
+        print(f'Found time slot for court "{court}" at {reservation_time}')
 
         # Verify the time slot is available by checking the end time
         find(
