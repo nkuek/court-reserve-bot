@@ -162,3 +162,5 @@ htmlcov/
 
 # Sensitive files
 .env
+
+.DS_Store
