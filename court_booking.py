@@ -7,7 +7,9 @@ Usage:
 """
 
 import argparse
+import logging
 import os
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +26,15 @@ from utils.click_latest_available_date import click_latest_available_date
 
 # Load .env from the same directory as this script
 load_dotenv(Path(__file__).parent / ".env")
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+log = logging.getLogger(__name__)
 
 
 def parse_args():
@@ -84,9 +95,9 @@ COURTS = [
 
 def add_players():
     """Add 3 placeholder players to the reservation."""
-    print("Attempting to add placeholders...")
+    log.info("Adding placeholder players...")
 
-    for _ in range(3):
+    for i in range(3):
         additional_players_input = find((By.NAME, "OwnersDropdown_input"))
         additional_players_input.send_keys("Placeholder")
 
@@ -97,22 +108,23 @@ def add_players():
         # Highlight first option and select it via keyboard (kendo-friendly)
         additional_players_input.send_keys(Keys.ARROW_DOWN)
         additional_players_input.send_keys(Keys.ENTER)
+        log.info(f"  Added placeholder {i + 1}/3")
 
-    print("Successfully added placeholders!")
+    log.info("Successfully added all placeholders")
 
 
 def click_disclosure():
     """Click the disclosure agreement checkbox."""
-    print("Attempting to click disclosure...")
+    log.info("Clicking disclosure checkbox...")
     disclosure_label = find((By.CSS_SELECTOR, "label[for='DisclosureAgree']"))
     disclosure_label.click()
-    print("Successfully clicked disclosure!")
+    log.info("Disclosure accepted")
     time.sleep(1)
 
 
 def add_duration(duration_hours: float):
     """Set the reservation duration."""
-    print(f"Attempting to set duration to {duration_hours} hours...")
+    log.info(f"Setting duration to {duration_hours} hours...")
 
     duration_input = find((By.CSS_SELECTOR, "span[aria-owns='Duration_listbox']"))
     duration_input.click()
@@ -124,32 +136,31 @@ def add_duration(duration_hours: float):
     )
 
     duration_index = duration_to_index(duration_hours)
-    print(f"Selecting duration: {duration_hours} hours (index {duration_index})")
 
     for _ in range(duration_index + 1):
         duration_input.send_keys(Keys.ARROW_DOWN)
 
     duration_input.send_keys(Keys.ENTER)
-    print("Successfully set duration!")
+    log.info(f"Duration set to {duration_hours} hours")
 
 
 def click_save_button(target_time: datetime):
     """Wait until target time and click the save button with high precision."""
-    print('Attempting to click "Save" button at target time...')
+    log.info("Preparing to click Save button...")
     save_button = find((By.CSS_SELECTOR, 'button[data-testid="Save"]'))
 
     delay = (target_time - datetime.now()).total_seconds()
 
     if delay < 0:
-        delay = 0
-        print('Target time already passed, clicking "Save" immediately.')
+        log.warning("Target time already passed, clicking Save immediately")
     else:
         hours = int(delay // 3600)
         minutes = int((delay % 3600) // 60)
         seconds = int(delay % 60)
-        print(f'Waiting {hours}h {minutes}m {seconds}s until target time ({target_time.strftime("%H:%M:%S")})...')
+        log.info(f"Waiting {hours}h {minutes}m {seconds}s until target time ({target_time.strftime('%H:%M:%S')})")
 
-        # Countdown with live updates every second
+        # Log countdown every 30 seconds (or every second if < 30s remaining)
+        last_log_time = None
         while True:
             remaining = (target_time - datetime.now()).total_seconds()
             if remaining <= 0.1:
@@ -159,15 +170,22 @@ def click_save_button(target_time: datetime):
             minutes = int((remaining % 3600) // 60)
             seconds = int(remaining % 60)
 
-            # \r moves cursor to start of line, end="" prevents newline
-            print(f'\r⏱️  {hours:02d}:{minutes:02d}:{seconds:02d} remaining...', end='', flush=True)
+            # Log every 30 seconds, or every second in final 10 seconds
+            current_remaining_int = int(remaining)
+            should_log = (
+                last_log_time is None or
+                remaining <= 10 or
+                current_remaining_int % 30 == 0 and current_remaining_int != last_log_time
+            )
+
+            if should_log:
+                log.info(f"  {hours:02d}:{minutes:02d}:{seconds:02d} remaining...")
+                last_log_time = current_remaining_int
 
             # Sleep for ~1 second, but check more frequently near the end
             sleep_time = min(1.0, remaining - 0.1)
             if sleep_time > 0:
                 time.sleep(sleep_time)
-
-        print()  # Newline after countdown
 
         # Busy-wait (spin loop) for precise timing in the final milliseconds
         while datetime.now() < target_time:
@@ -178,14 +196,13 @@ def click_save_button(target_time: datetime):
 
     click_time = datetime.now()
     diff_ms = (click_time - target_time).total_seconds() * 1000
-    print(f'Clicked "Save" button! (actual: {click_time.strftime("%H:%M:%S.%f")[:-3]}, diff: {diff_ms:+.1f}ms)')
+    log.info(f"CLICKED Save button at {click_time.strftime('%H:%M:%S.%f')[:-3]} (diff: {diff_ms:+.1f}ms)")
     time.sleep(1)
 
 
 def check_court_availability(court: str, reservation_time: str, end_time: str):
     """Check if a court is available at the specified time."""
-    print(f"Trying court: {court}")
-    print(f"Looking for time: '{reservation_time}'")
+    log.info(f"Checking court: {court} for {reservation_time}")
 
     try:
         start_time_btn = find(
@@ -194,7 +211,7 @@ def check_court_availability(court: str, reservation_time: str, end_time: str):
                 f"//button[@data-courtlabel='{court}' and contains(text(), '{reservation_time}')]",
             )
         )
-        print(f'Found time slot for court "{court}" at {reservation_time}')
+        log.info(f"  Found start time {reservation_time}")
 
         # Verify the time slot is available by checking the end time
         find(
@@ -203,14 +220,14 @@ def check_court_availability(court: str, reservation_time: str, end_time: str):
                 f"//button[@data-courtlabel='{court}' and contains(text(), '{end_time}')]",
             )
         )
-        print(f'End time {end_time} also available for court "{court}"')
+        log.info(f"  Found end time {end_time} - slot available!")
 
         start_time_btn.click()
 
     except Exception:
         raise Exception(
             f'Time slot for court "{court}" at {reservation_time} not found. '
-            "It may be already booked. Trying next court..."
+            "It may be already booked."
         )
 
 
@@ -246,6 +263,13 @@ def main():
     end_time = to_12_hour(end_time_dt)
 
     # Start the booking process
+    log.info("=" * 50)
+    log.info("COURT BOOKING STARTED")
+    log.info(f"  Target time: {reservation_time}")
+    log.info(f"  End time: {end_time}")
+    log.info(f"  Duration: {duration_hours} hours")
+    log.info("=" * 50)
+
     login()
     click_latest_available_date()
 
@@ -254,7 +278,7 @@ def main():
             try:
                 check_court_availability(court, reservation_time, end_time)
             except Exception as err:
-                print(err)
+                log.warning(f"  {err}")
                 continue  # Try next court
 
             add_players()
@@ -267,9 +291,9 @@ def main():
             alerts = driver.find_elements(By.CLASS_NAME, "swal2-modal")
 
             if alerts:
-                print(
-                    f'SweetAlert detected after saving on court "{court}". '
-                    "Assuming failure/conflict, confirming and continuing..."
+                log.warning(
+                    f"Alert detected after saving on court '{court}' - "
+                    "assuming conflict, trying next court..."
                 )
 
                 # Click the confirm button on the SweetAlert
@@ -282,16 +306,20 @@ def main():
                 # Continue to next court (DO NOT break)
                 continue
 
-            print(f"Successfully saved reservation on court: {court}")
+            log.info("=" * 50)
+            log.info(f"SUCCESS! Reservation saved on court: {court}")
+            log.info("=" * 50)
 
             # If we got here without throwing, we consider it a success and stop
             break
 
         except Exception as err:
-            print(f'Failed on court "{court}": {err}')
+            log.error(f"Failed on court '{court}': {err}")
             # Continue to next court
 
+    log.info("Closing browser...")
     driver.quit()
+    log.info("Done.")
 
 
 if __name__ == "__main__":
