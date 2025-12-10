@@ -17,6 +17,7 @@ from constants import driver
 from utils.find import find
 from utils.login import login
 from utils.click_latest_available_date import click_latest_available_date
+from utils.discord import notify_open_play_success, notify_failure, notify_start
 
 
 # Load .env from the same directory as this script
@@ -36,6 +37,8 @@ def main():
     log.info("=" * 50)
     log.info("OPEN PLAY REGISTRATION STARTED")
     log.info("=" * 50)
+
+    notify_start("Open Play Registration", "**Event:** Pickleball Open Play - Intermediate")
 
     login()
     click_latest_available_date()
@@ -67,10 +70,19 @@ def main():
     log.info("SUCCESS! Registration completed")
     log.info("=" * 50)
 
+    # Send Discord notification
+    notify_open_play_success("Pickleball Open Play - Intermediate")
+
     log.info("Closing browser...")
     driver.quit()
     log.info("Done.")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        log.error(f"Unexpected error: {e}")
+        notify_failure(str(e))
+        driver.quit()
+        raise

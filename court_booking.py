@@ -22,6 +22,7 @@ from constants import driver, BASE_URL
 from utils.find import find
 from utils.login import login
 from utils.click_latest_available_date import click_latest_available_date
+from utils.discord import notify_success, notify_failure, notify_start
 
 
 # Load .env from the same directory as this script
@@ -270,6 +271,8 @@ def main():
     log.info(f"  Duration: {duration_hours} hours")
     log.info("=" * 50)
 
+    notify_start("Court Booking", f"**Time:** {reservation_time}\n**Duration:** {duration_hours} hours")
+
     login()
     click_latest_available_date()
 
@@ -310,12 +313,18 @@ def main():
             log.info(f"SUCCESS! Reservation saved on court: {court}")
             log.info("=" * 50)
 
+            # Send Discord notification
+            notify_success(court, reservation_time, duration_hours)
+
             # If we got here without throwing, we consider it a success and stop
             break
 
         except Exception as err:
             log.error(f"Failed on court '{court}': {err}")
             # Continue to next court
+    else:
+        # This runs if we didn't break (no court was booked)
+        notify_failure("Could not book any court - all courts unavailable or failed")
 
     log.info("Closing browser...")
     driver.quit()
