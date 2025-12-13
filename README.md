@@ -1,63 +1,283 @@
-# CourtReserve Selenium Automation
+# CourtReserve Booking Bot
 
-Selenium automation scripts for booking courts and registering for open play on CourtReserve.
+Automated booking scripts for CourtReserve using Selenium. Book courts and register for open play events with precise timing.
+
+## Features
+
+- **Court Booking**: Automatically book pickleball courts with customizable time and duration
+- **Open Play Registration**: Register for open play events
+- **Date Selection**: Book for today, tomorrow, or up to 5 days in advance
+- **Wait Until**: Schedule scripts to run at a specific time (e.g., when booking windows open)
+- **Closing Time Handling**: Automatically adjusts duration if it would exceed facility closing time (23:00)
+- **Discord Notifications**: Get notified on success or failure via Discord webhook
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.11+
 - Chrome browser installed
-- ChromeDriver (will be auto-managed by Selenium 4.6+)
 
 ## Installation
 
+### Using uv (Recommended)
+
+[uv](https://docs.astral.sh/uv/) is a fast Python package installer and resolver.
+
 ```bash
+# Install uv (macOS/Linux)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Or with Homebrew
+brew install uv
+
+# Create virtual environment and install dependencies
+uv venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv pip install -r requirements.txt
+```
+
+### Using pip
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
 ## Configuration
 
-Create a `.env` file in the project root with your CourtReserve credentials:
+Duplicate the .env.example file and rename it to `.env`:
 
-```
+```bash
+# Required: CourtReserve credentials
 EMAIL=your-email@example.com
 PASSWORD=your-password
+
+# Optional: Discord webhook for notifications
+# See https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks for more details on how to create a webhook
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+
+# Optional: Run browser in headless mode (Does not open a browser tab)
+HEADLESS=false
+
+# Optional: Custom Chrome binary path
+CHROME_PATH=/path/to/chrome
 ```
 
 ## Usage
 
 ### Court Booking
 
-Book a court at a specific time:
+To use with `uv`, replace `python` with `uv run` in the commands below.
 
 ```bash
-python court_booking.py --time=21:00 --duration=2
+# List all commands
+python court_booking.py --help
+
+# Book a 2-hour slot at 9 PM, 5 days from now (latest available)
+python court_booking.py --time 21:00 --duration 2
+
+# Book for a specific date
+python court_booking.py --time 21:00 --duration 2 --date 12/15
+
+# Book for tomorrow
+python court_booking.py --time 21:00 --duration 2 --date tomorrow
+
+# Book 3 days from now
+python court_booking.py --time 21:00 --duration 2 --date +3d
+
+# Wait until 7 AM, then book
+python court_booking.py --time 21:00 --duration 2 --wait-until 07:00
+
+# Wait until tomorrow at 7 AM
+python court_booking.py --time 21:00 --duration 2 --wait-until "tomorrow 07:00"
 ```
 
-Options:
+#### Options
 
-- `--time`: Reservation time in 24-hour format (e.g., `21:00` for 9:00 PM)
-- `--duration`: Duration in hours (1, 1.5, 2, 2.5, or 3)
+| Option         | Short | Description                                                              |
+| -------------- | ----- | ------------------------------------------------------------------------ |
+| `--time`       | `-t`  | Reservation time in 24h format (e.g., `21:00`)                           |
+| `--duration`   | `-d`  | Duration in hours: `1`, `1.5`, `2`, `2.5`, or `3`                        |
+| `--date`       |       | Date to book: `today`, `tomorrow`, `+3d`, `12/15`, or `latest` (default) |
+| `--wait-until` | `-w`  | Wait until time before starting: `07:00`, `tomorrow 07:00`, `+1d 07:00`  |
+
+#### Precision Timing
+
+The script has built-in precision timing for competitive booking scenarios. After filling out the reservation form, it waits until exactly the `--time` you specified before clicking the save button. This is useful when booking windows open at a specific time and you want to submit at the exact moment.
+
+For example, if you run `--time 21:00` at 20:58, the script will:
+
+1. Log in and fill out the form
+2. Display a countdown timer
+3. Click save at exactly 21:00:00 (with millisecond precision)
 
 ### Open Play Registration
 
-Register for Pickleball Open Play - Intermediate:
+To use with `uv`, replace `python` with `uv run` in the commands below.
 
 ```bash
+# Register for default event (Pickleball Open Play - Intermediate)
 python open_play.py
+
+# Register for a specific event
+python open_play.py --event "Pickleball Open Play - Advanced"
+
+# Register for tomorrow's event
+python open_play.py --date tomorrow
+
+# Wait until 7 AM, then register
+python open_play.py --wait-until 07:00
 ```
+
+#### Options
+
+| Option         | Short | Description                                                               |
+| -------------- | ----- | ------------------------------------------------------------------------- |
+| `--event`      | `-e`  | Event name to register for (default: Pickleball Open Play - Intermediate) |
+| `--date`       |       | Date to book: `today`, `tomorrow`, `+3d`, `12/15`, or `latest` (default)  |
+| `--wait-until` | `-w`  | Wait until time before starting                                           |
+
+### Date Formats
+
+The `--date` option supports:
+
+| Format     | Example           | Description                                    |
+| ---------- | ----------------- | ---------------------------------------------- |
+| `latest`   | `--date latest`   | 5 days from now (default, max advance booking) |
+| `today`    | `--date today`    | Today's date                                   |
+| `tomorrow` | `--date tomorrow` | Tomorrow's date                                |
+| `+Nd`      | `--date +3d`      | N days from now                                |
+| `MM/DD`    | `--date 12/15`    | Specific date (current year)                   |
+
+### Wait-Until Formats
+
+The `--wait-until` option supports:
+
+| Format           | Example               | Description                   |
+| ---------------- | --------------------- | ----------------------------- |
+| `HH:MM`          | `-w 07:00`            | Today (or tomorrow if passed) |
+| `HH:MM:SS`       | `-w 06:59:55`         | With seconds precision        |
+| `tomorrow HH:MM` | `-w "tomorrow 07:00"` | Tomorrow at time              |
+| `+Nd HH:MM`      | `-w "+1d 07:00"`      | N days from now at time       |
+
+## Example: Scheduled Booking
+
+Book a court 5 days in advance when the booking window opens at 7 AM:
+
+```bash
+uv run court_booking.py \
+  --time 21:00 \
+  --duration 2 \
+  --date latest \
+  --wait-until 07:00
+```
+
+> ⚠️ **Warning:** The script cannot run if your computer is asleep. Make sure to disable sleep/hibernation or use a machine that stays awake (e.g., a server or cloud VM) when using `--wait-until` for scheduled bookings.
+
+## Scheduling with Cron
+
+Instead of using `--wait-until`, you can use cron to run the script at a specific time. This is useful for servers or machines that are always on.
+
+### Setup
+
+1. Open your crontab for editing:
+
+```bash
+crontab -e
+```
+
+2. Add a cron job. The format is:
+
+```
+MIN HOUR DAY MONTH WEEKDAY command
+```
+
+### Examples
+
+```bash
+# Book a court every day at 7:00 AM
+0 7 * * * cd /path/to/project && /path/to/.venv/bin/python court_booking.py --time 21:00 --duration 2
+
+# Book a court on weekdays only at 6:59:55 AM (using --wait-until for precision)
+59 6 * * 1-5 cd /path/to/project && /path/to/.venv/bin/python court_booking.py --time 21:00 --duration 2 --wait-until 07:00
+
+# Register for open play every Saturday at 7:00 AM
+0 7 * * 6 cd /path/to/project && /path/to/.venv/bin/python open_play.py
+```
+See https://crontab.guru/ if you need assistance generating cron expressions.
+
+### Finding Your Paths
+
+```bash
+# Get the full path to your project
+pwd
+
+# Get the full path to your Python interpreter
+which python
+# Or if using a virtual environment (ie uv after running `uv venv`)
+echo $VIRTUAL_ENV/bin/python
+```
+
+### Logging Cron Output
+
+Redirect output to a log file to debug issues:
+
+```bash
+0 7 * * * cd /path/to/project && /path/to/.venv/bin/python court_booking.py --time 21:00 --duration 2 >> /path/to/project/logs/cron.log 2>&1
+```
+
+### Verify Cron is Running
+
+```bash
+# List your current cron jobs
+crontab -l
+
+# Check cron logs (macOS)
+log show --predicate 'process == "cron"' --last 1h
+
+# Check cron logs (Linux)
+grep CRON /var/log/syslog
+```
+
+> 💡 **Tip:** Schedule the court booking script to run a few minutes before the time you would like to book to ensure the reservation is set up in time.
 
 ## Project Structure
 
 ```
 .
-├── constants.py                    # Shared constants and driver setup
-├── court_booking.py                # Court booking script
-├── open_play.py                    # Open play registration script
-├── requirements.txt                # Python dependencies
+├── constants.py              # Driver setup with lazy initialization
+├── court_booking.py          # Court booking script
+├── open_play.py              # Open play registration script
+├── requirements.txt          # Python dependencies
 ├── utils/
 │   ├── __init__.py
-│   ├── click_latest_available_date.py
-│   ├── find.py                     # Element finder with retry logic
-│   └── login.py                    # Login utility
-└── .env                            # Your credentials (not committed)
+│   ├── booking_date.py       # Date selection and parsing
+│   ├── discord.py            # Discord webhook notifications
+│   ├── exceptions.py         # Custom exceptions
+│   ├── find.py               # Element finder with retry logic
+│   ├── login.py              # Login utility
+│   └── wait.py               # Wait-until functionality
+└── .env                      # Your credentials (not committed)
 ```
+
+## Troubleshooting
+
+### Browser doesn't open
+
+- Make sure Chrome is installed
+- Try setting `CHROME_PATH` in `.env` if Chrome is in a non-standard location
+
+### Login fails
+
+- Verify your `EMAIL` and `PASSWORD` in `.env`
+- Check if your account is locked or requires 2FA
+
+### Date not available
+
+- Bookings open 5 days in advance at a specific time (usually 7 AM)
+- Use `--wait-until` to wait for the booking window to open
+
+### Court unavailable
+
+- The script tries multiple courts in priority order
+- All courts may already be booked at your requested time
