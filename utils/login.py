@@ -7,8 +7,9 @@ from selenium.webdriver.support import expected_conditions as EC
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from constants import driver, BASE_URL
+from constants import get_driver, BASE_URL
 from utils.find import find
+from utils.exceptions import LoginError
 
 log = logging.getLogger(__name__)
 
@@ -18,9 +19,21 @@ def login():
     email = os.environ.get("EMAIL")
     password = os.environ.get("PASSWORD")
 
-    if not email or not password:
-        raise ValueError("Missing EMAIL or PASSWORD environment variables.")
+    missing = []
+    if not email:
+        missing.append("EMAIL")
+    if not password:
+        missing.append("PASSWORD")
 
+    if missing:
+        raise LoginError(
+            f"Missing required environment variable(s): {', '.join(missing)}.\n"
+            f"  Please set these in your .env file:\n"
+            f"    EMAIL=your_email@example.com\n"
+            f"    PASSWORD=your_password"
+        )
+
+    driver = get_driver()
     log.info("Logging in...")
     driver.get(f"{BASE_URL}/Account/Login")
     time.sleep(2)  # Wait for page to fully load
