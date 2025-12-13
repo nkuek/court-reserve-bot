@@ -51,7 +51,7 @@ def send_discord_notification(
             webhook_url,
             data=data,
             headers={
-                'Content-Type': 'application/json', 
+                'Content-Type': 'application/json',
                 'User-Agent': 'CourtBookingBot/1.0'
             },
             method='POST'
@@ -68,9 +68,9 @@ def send_discord_notification(
         log.error(f"Failed to send Discord notification: {e}")
 
 
-def notify_success(court: str, time: str, duration: float):
+def notify_success(court: str, date: str, time: str, duration: float):
     """Send a success notification for court booking."""
-    message = f"**Court:** {court}\n**Time:** {time}\n**Duration:** {duration} hours"
+    message = f"**Court:** {court}\n**Date:** {date}\n**Time:** {time}\n**Duration:** {duration} hours"
     send_discord_notification(message, title="Court Booked Successfully!", success=True)
 
 
@@ -79,9 +79,10 @@ def notify_failure(error: str):
     send_discord_notification(f"**Error:** {error}", title="Booking Failed", success=False)
 
 
-def notify_open_play_success(event: str):
+def notify_open_play_success(event: str, date: str):
     """Send a success notification for open play registration."""
-    send_discord_notification(f"**Event:** {event}", title="Open Play Registration Successful!", success=True)
+    message = f"**Event:** {event}\n**Date:** {date}"
+    send_discord_notification(message, title="Open Play Registration Successful!", success=True)
 
 
 def notify_start(script_name: str, details: str = ""):
