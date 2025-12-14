@@ -300,9 +300,9 @@ async def book(
     if wait_until:
         embed.add_field(name="Wait Until", value=wait_until, inline=True)
 
-    embed.set_footer(text="Running in background...")
+    embed.set_footer(text="Running in background... Results will be sent via DM.")
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # Run the booking script in background
     asyncio.create_task(_run_script(interaction, cmd, "Court Booking"))
@@ -363,9 +363,9 @@ async def openplay(
     if wait_until:
         embed.add_field(name="Wait Until", value=wait_until, inline=True)
 
-    embed.set_footer(text="Running in background...")
+    embed.set_footer(text="Running in background... Results will be sent via DM.")
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # Run the script in background
     asyncio.create_task(_run_script(interaction, cmd, "Open Play Registration"))
@@ -442,9 +442,16 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
                     if status_message:
                         await status_message.edit(content=f"📋 **Live Log:**\n```\n{log_text}\n```")
                     else:
-                        status_message = await interaction.followup.send(
-                            f"📋 **Live Log:**\n```\n{log_text}\n```"
-                        )
+                        # Send live log via DM for privacy
+                        try:
+                            status_message = await interaction.user.send(
+                                f"📋 **Live Log ({task_name}):**\n```\n{log_text}\n```"
+                            )
+                        except discord.Forbidden:
+                            # Fall back to channel if DMs disabled
+                            status_message = await interaction.followup.send(
+                                f"📋 **Live Log:**\n```\n{log_text}\n```"
+                            )
                     last_update_time = datetime.now()
                 except Exception as e:
                     log.warning(f"Failed to send log update: {e}")
@@ -494,8 +501,15 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
         if len(output) <= 1000:
             embed.add_field(name="📜 Full Log", value=f"```\n{output}\n```", inline=False)
 
-        # Ping the user with the result
-        await interaction.followup.send(content=user_mention, embed=embed)
+        # Send result via DM for privacy
+        try:
+            await interaction.user.send(embed=embed)
+        except discord.Forbidden:
+            # User has DMs disabled, fall back to followup
+            await interaction.followup.send(
+                content=f"{user_mention} (couldn't DM you - enable DMs for private results)",
+                embed=embed
+            )
 
         # Delete the live log message if it exists
         if status_message:
@@ -516,7 +530,11 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
             color=discord.Color.red(),
             timestamp=datetime.now()
         )
-        await interaction.followup.send(content=user_mention, embed=embed)
+        # Send error via DM for privacy
+        try:
+            await interaction.user.send(embed=embed)
+        except discord.Forbidden:
+            await interaction.followup.send(content=user_mention, embed=embed)
 
 
 def _validate_time(time_str: str) -> bool:
