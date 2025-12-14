@@ -46,6 +46,9 @@ Thumbs.db
 logs/
 *.log
 
+# User data (encrypted credentials)
+data/
+
 # Debug screenshots
 debug_*.png
 

@@ -56,6 +56,10 @@ PASSWORD=your-password
 # See https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks for more details on how to create a webhook
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 
+# Optional: Discord bot token (for running the bot)
+# See the "Discord Bot" section below for setup instructions
+DISCORD_BOT_TOKEN=your_bot_token_here
+
 # Optional: Run browser in headless mode (Does not open a browser tab)
 HEADLESS=false
 
@@ -204,6 +208,7 @@ MIN HOUR DAY MONTH WEEKDAY command
 # Register for open play every Saturday at 7:00 AM
 0 7 * * 6 cd /path/to/project && /path/to/.venv/bin/python open_play.py
 ```
+
 See https://crontab.guru/ if you need assistance generating cron expressions.
 
 ### Finding Your Paths
@@ -241,10 +246,153 @@ grep CRON /var/log/syslog
 
 > 💡 **Tip:** Schedule the court booking script to run a few minutes before the time you would like to book to ensure the reservation is set up in time.
 
+## Discord Bot
+
+Run bookings via Discord commands instead of the command line. Perfect for non-technical users.
+
+### Setup
+
+1. **Create a Discord Application**
+
+   - Go to [Discord Developer Portal](https://discord.com/developers/applications)
+   - Click "New Application" and give it a name
+   - Go to "Bot" in the sidebar and click "Add Bot"
+   - Under "Privileged Gateway Intents", enable nothing (defaults are fine)
+   - Click "Reset Token" and copy the token
+
+2. **Add the bot token to your `.env`**
+
+   ```bash
+   DISCORD_BOT_TOKEN=your_bot_token_here
+   ```
+
+3. **Invite the bot to your server**
+
+   - Go to "OAuth2" > "URL Generator" in the Developer Portal
+   - Select scopes: `bot`, `applications.commands`
+   - Select permissions: `Send Messages`, `Use Slash Commands`
+   - Copy the generated URL and open it to invite the bot
+
+4. **Run the bot**
+   ```bash
+   python bot.py
+   ```
+
+### Commands
+
+| Command                                        | Description                         |
+| ---------------------------------------------- | ----------------------------------- |
+| `/help`                                        | Show all commands and usage         |
+| `/register email:... password:...`             | Save your CourtReserve credentials  |
+| `/unregister`                                  | Delete your saved credentials       |
+| `/book time:21:00 duration:2`                  | Book a court at 9 PM for 2 hours    |
+| `/book time:21:00 duration:2 date:tomorrow`    | Book for tomorrow                   |
+| `/book time:21:00 duration:2 wait_until:07:00` | Wait until 7 AM, then book          |
+| `/openplay`                                    | Register for Intermediate open play |
+| `/openplay event:Advanced date:tomorrow`       | Register for Advanced, tomorrow     |
+| `/cancel`                                      | Cancel a running booking task       |
+| `/ping`                                        | Check if bot is online              |
+
+### Multi-User Support
+
+Each user registers their own CourtReserve credentials:
+
+1. User sends `/register email:user@example.com password:secret123`
+2. Credentials are encrypted and stored in the database
+3. When the user runs `/book` or `/openplay`, their credentials are used
+4. Users can delete their credentials with `/unregister`
+
+Credentials are encrypted using Fernet symmetric encryption. The encryption key is derived from the bot token.
+
+### Running the Bot 24/7
+
+For the bot to always be available, run it on a server or use a process manager:
+
+```bash
+# Using nohup (simple)
+nohup python bot.py > bot.log 2>&1 &
+
+# Using screen
+screen -S courtbot
+python bot.py
+# Press Ctrl+A, then D to detach
+```
+
+### Deploying to Fly.io
+
+Deploy the bot to the cloud so it runs 24/7 without keeping your computer on.
+
+1. **Install the Fly CLI**
+
+   ```bash
+   # macOS
+   brew install flyctl
+
+   # Linux
+   curl -L https://fly.io/install.sh | sh
+
+   # Windows
+   powershell -Command "iwr https://fly.io/install.ps1 -useb | iex"
+   ```
+
+2. **Sign up and log in**
+
+   ```bash
+   fly auth signup   # or fly auth login if you have an account
+   ```
+
+3. **Launch the app** (first time only)
+
+   ```bash
+   fly launch --no-deploy
+   ```
+
+   - When prompted, accept the generated name or choose your own
+   - Select a region close to you
+   - Say **No** to PostgreSQL and Redis
+
+4. **Set your secrets**
+
+   ```bash
+   fly secrets set DISCORD_BOT_TOKEN=your-bot-token
+   fly secrets set DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+   ```
+
+   > Note: `EMAIL` and `PASSWORD` are no longer needed as secrets since each user registers their own credentials via `/register`.
+
+5. **Create a volume for persistent storage** (stores user credentials)
+
+   ```bash
+   fly volumes create courtbot_data --size 1 --region iad
+   ```
+
+6. **Deploy**
+
+   ```bash
+   fly deploy
+   ```
+
+7. **Check logs**
+
+   ```bash
+   fly logs
+   ```
+
+8. **Manage the bot**
+
+   ```bash
+   fly status          # Check if running
+   fly apps restart    # Restart the bot
+   fly apps destroy    # Delete the app
+   ```
+
+> 💡 **Cost:** Fly.io's free tier includes enough resources for this bot. You may need to add a credit card but won't be charged for light usage.
+
 ## Project Structure
 
 ```
 .
+├── bot.py                    # Discord bot for slash commands
 ├── constants.py              # Driver setup with lazy initialization
 ├── court_booking.py          # Court booking script
 ├── open_play.py              # Open play registration script

@@ -1,0 +1,26 @@
+# fly.toml - Discord bot configuration
+# See https://fly.io/docs/reference/configuration/
+
+app = 'courtreserve-bot'
+primary_region = 'iad'
+
+[build]
+
+[env]
+  HEADLESS = 'true'
+  TZ = 'America/New_York'
+
+# Persistent storage for user credentials
+[[mounts]]
+  source = 'courtbot_data'
+  destination = '/app/data'
+
+# Run as a background process (not an HTTP service)
+[processes]
+  bot = 'python bot.py'
+
+[[vm]]
+  memory = '2gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  processes = ['bot']
