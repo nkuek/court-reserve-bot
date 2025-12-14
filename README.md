@@ -282,6 +282,9 @@ Run bookings via Discord commands instead of the command line. Perfect for non-t
 
 | Command                                        | Description                         |
 | ---------------------------------------------- | ----------------------------------- |
+| `/help`                                        | Show all commands and usage         |
+| `/register email:... password:...`             | Save your CourtReserve credentials  |
+| `/unregister`                                  | Delete your saved credentials       |
 | `/book time:21:00 duration:2`                  | Book a court at 9 PM for 2 hours    |
 | `/book time:21:00 duration:2 date:tomorrow`    | Book for tomorrow                   |
 | `/book time:21:00 duration:2 wait_until:07:00` | Wait until 7 AM, then book          |
@@ -289,6 +292,17 @@ Run bookings via Discord commands instead of the command line. Perfect for non-t
 | `/openplay event:Advanced date:tomorrow`       | Register for Advanced, tomorrow     |
 | `/cancel`                                      | Cancel a running booking task       |
 | `/ping`                                        | Check if bot is online              |
+
+### Multi-User Support
+
+Each user registers their own CourtReserve credentials:
+
+1. User sends `/register email:user@example.com password:secret123`
+2. Credentials are encrypted and stored in the database
+3. When the user runs `/book` or `/openplay`, their credentials are used
+4. Users can delete their credentials with `/unregister`
+
+Credentials are encrypted using Fernet symmetric encryption. The encryption key is derived from the bot token.
 
 ### Running the Bot 24/7
 
@@ -302,10 +316,77 @@ nohup python bot.py > bot.log 2>&1 &
 screen -S courtbot
 python bot.py
 # Press Ctrl+A, then D to detach
-
-# Using systemd (Linux, recommended for servers)
-# See Troubleshooting section for setup
 ```
+
+### Deploying to Fly.io
+
+Deploy the bot to the cloud so it runs 24/7 without keeping your computer on.
+
+1. **Install the Fly CLI**
+
+   ```bash
+   # macOS
+   brew install flyctl
+
+   # Linux
+   curl -L https://fly.io/install.sh | sh
+
+   # Windows
+   powershell -Command "iwr https://fly.io/install.ps1 -useb | iex"
+   ```
+
+2. **Sign up and log in**
+
+   ```bash
+   fly auth signup   # or fly auth login if you have an account
+   ```
+
+3. **Launch the app** (first time only)
+
+   ```bash
+   fly launch --no-deploy
+   ```
+
+   - When prompted, accept the generated name or choose your own
+   - Select a region close to you
+   - Say **No** to PostgreSQL and Redis
+
+4. **Set your secrets**
+
+   ```bash
+   fly secrets set DISCORD_BOT_TOKEN=your-bot-token
+   fly secrets set DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+   ```
+
+   > Note: `EMAIL` and `PASSWORD` are no longer needed as secrets since each user registers their own credentials via `/register`.
+
+5. **Create a volume for persistent storage** (stores user credentials)
+
+   ```bash
+   fly volumes create courtbot_data --size 1 --region iad
+   ```
+
+6. **Deploy**
+
+   ```bash
+   fly deploy
+   ```
+
+7. **Check logs**
+
+   ```bash
+   fly logs
+   ```
+
+8. **Manage the bot**
+
+   ```bash
+   fly status          # Check if running
+   fly apps restart    # Restart the bot
+   fly apps destroy    # Delete the app
+   ```
+
+> 💡 **Cost:** Fly.io's free tier includes enough resources for this bot. You may need to add a credit card but won't be charged for light usage.
 
 ## Project Structure
 

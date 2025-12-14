@@ -7,6 +7,7 @@ Usage:
 """
 
 import logging
+import os
 import re
 import sys
 import time
@@ -285,8 +286,30 @@ def main(
             help="Date to book. Formats: today, tomorrow, +3d, 12/15, latest (default)",
         ),
     ] = "latest",
+    email: Annotated[
+        str | None,
+        typer.Option(
+            "--email",
+            help="CourtReserve email (overrides .env)",
+            envvar="EMAIL",
+        ),
+    ] = None,
+    password: Annotated[
+        str | None,
+        typer.Option(
+            "--password",
+            help="CourtReserve password (overrides .env)",
+            envvar="PASSWORD",
+        ),
+    ] = None,
 ):
     """Book a pickleball court at the specified time."""
+    # Set credentials in environment for login module
+    if email:
+        os.environ["EMAIL"] = email
+    if password:
+        os.environ["PASSWORD"] = password
+
     # Wait until specified time if provided
     if wait_until_time:
         try:

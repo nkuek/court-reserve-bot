@@ -1,0 +1,25 @@
+# Fly.io configuration
+# See https://fly.io/docs/reference/configuration/
+
+app = "courtreserve-bot"
+primary_region = "iad"  # Ashburn, VA - change to your nearest region
+
+[build]
+
+[env]
+  HEADLESS = "true"
+
+# No HTTP service needed - this is a background worker
+[processes]
+  bot = "python bot.py"
+
+# Persistent storage for user database
+[mounts]
+  source = "courtbot_data"
+  destination = "/app/data"
+
+# Resource allocation
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  processes = ["bot"]

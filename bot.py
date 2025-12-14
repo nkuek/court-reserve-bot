@@ -6,6 +6,8 @@ Usage:
     python bot.py
 
 Commands:
+    /register - Save your CourtReserve credentials
+    /unregister - Delete your saved credentials
     /book time:21:00 duration:2 [date:tomorrow]
     /openplay [event:Advanced] [date:tomorrow]
     /ping - Check if bot is online
@@ -14,7 +16,6 @@ Commands:
 import asyncio
 import logging
 import os
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,13 @@ from pathlib import Path
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
+
+from utils.user_store import (
+    save_user_credentials,
+    get_user_credentials,
+    delete_user_credentials,
+    user_exists,
+)
 
 # Load .env from the same directory as this script
 load_dotenv(Path(__file__).parent / ".env")
@@ -85,6 +93,144 @@ async def ping(interaction: discord.Interaction):
     )
 
 
+@tree.command(name="help", description="Show all available commands")
+async def help_command(interaction: discord.Interaction):
+    """Show help information for all commands."""
+    embed = discord.Embed(
+        title="🏸 Court Booking Bot - Help",
+        description="Book pickleball courts and register for open play via Discord.",
+        color=discord.Color.blue(),
+    )
+
+    embed.add_field(
+        name="🔐 Getting Started",
+        value=(
+            "First, register your CourtReserve credentials:\n"
+            "```/register email:you@example.com password:yourpass```\n"
+            "Your credentials are encrypted and stored securely."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="/book",
+        value=(
+            "Book a pickleball court.\n"
+            "**Required:** `time`, `duration`\n"
+            "**Optional:** `date`, `wait_until`\n"
+            "```/book time:21:00 duration:2 date:tomorrow```"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="/openplay",
+        value=(
+            "Register for an open play event.\n"
+            "**Optional:** `event`, `date`, `wait_until`\n"
+            "```/openplay event:Advanced date:12/15```"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="/register",
+        value="Save your CourtReserve credentials.",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="/unregister",
+        value="Delete your saved credentials.",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="/cancel",
+        value="Cancel a running booking task.",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="📅 Date Formats",
+        value=(
+            "`latest` - 5 days ahead (default)\n"
+            "`today` - Today\n"
+            "`tomorrow` - Tomorrow\n"
+            "`+3d` - 3 days from now\n"
+            "`12/15` - December 15"
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="⏰ Wait Until",
+        value=(
+            "Delay execution until a specific time.\n"
+            "`07:00` - Today at 7 AM\n"
+            "`tomorrow 07:00` - Tomorrow at 7 AM"
+        ),
+        inline=True,
+    )
+
+    embed.set_footer(text="Tip: The bot waits until the exact reservation time before clicking save.")
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="register", description="Save your CourtReserve credentials")
+@app_commands.describe(
+    email="Your CourtReserve email address",
+    password="Your CourtReserve password",
+)
+async def register(
+    interaction: discord.Interaction,
+    email: str,
+    password: str,
+):
+    """Register user credentials for booking."""
+    try:
+        save_user_credentials(interaction.user.id, email, password)
+
+        embed = discord.Embed(
+            title="✅ Registration Successful",
+            description=(
+                f"Your credentials have been saved securely.\n\n"
+                f"**Email:** {email}\n"
+                f"**Password:** {'•' * len(password)}\n\n"
+                f"You can now use `/book` and `/openplay` commands!"
+            ),
+            color=discord.Color.green(),
+        )
+        embed.set_footer(text="Use /unregister to delete your credentials.")
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        log.info(f"User {interaction.user.id} registered")
+
+    except Exception as e:
+        log.error(f"Failed to register user {interaction.user.id}: {e}")
+        await interaction.response.send_message(
+            f"❌ Failed to save credentials: {e}",
+            ephemeral=True
+        )
+
+
+@tree.command(name="unregister", description="Delete your saved credentials")
+async def unregister(interaction: discord.Interaction):
+    """Delete user credentials."""
+    if delete_user_credentials(interaction.user.id):
+        await interaction.response.send_message(
+            "✅ Your credentials have been deleted.",
+            ephemeral=True
+        )
+        log.info(f"User {interaction.user.id} unregistered")
+    else:
+        await interaction.response.send_message(
+            "❌ You don't have any saved credentials.",
+            ephemeral=True
+        )
+
+
 @tree.command(name="book", description="Book a pickleball court")
 @app_commands.describe(
     time="Reservation time in 24h format (e.g., 21:00 for 9 PM)",
@@ -107,6 +253,18 @@ async def book(
     wait_until: str | None = None,
 ):
     """Book a pickleball court."""
+    # Check for user credentials
+    credentials = get_user_credentials(interaction.user.id)
+    if not credentials:
+        await interaction.response.send_message(
+            "❌ You haven't registered your credentials yet.\n"
+            "Use `/register` to save your CourtReserve login first.",
+            ephemeral=True
+        )
+        return
+
+    email, password = credentials
+
     # Validate time format
     if not _validate_time(time):
         await interaction.response.send_message(
@@ -122,6 +280,8 @@ async def book(
         "--time", time,
         "--duration", str(duration),
         "--date", date,
+        "--email", email,
+        "--password", password,
     ]
 
     if wait_until:
@@ -166,12 +326,26 @@ async def openplay(
     wait_until: str | None = None,
 ):
     """Register for an open play event."""
+    # Check for user credentials
+    credentials = get_user_credentials(interaction.user.id)
+    if not credentials:
+        await interaction.response.send_message(
+            "❌ You haven't registered your credentials yet.\n"
+            "Use `/register` to save your CourtReserve login first.",
+            ephemeral=True
+        )
+        return
+
+    email, password = credentials
+
     # Build command
     cmd = [
         get_python_path(),
         str(get_script_dir() / "open_play.py"),
         "--event", event,
         "--date", date,
+        "--email", email,
+        "--password", password,
     ]
 
     if wait_until:
