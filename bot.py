@@ -392,8 +392,9 @@ async def cancel(interaction: discord.Interaction):
 
 
 async def _run_script(interaction: discord.Interaction, cmd: list[str], task_name: str):
-    """Run a booking script and report results."""
+    """Run a booking script and report results with live log updates."""
     user_id = interaction.user.id
+    user_mention = interaction.user.mention
 
     try:
         # Start the process
@@ -406,15 +407,63 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
 
         running_tasks[user_id] = process
 
-        # Wait for completion
-        stdout, _ = await process.communicate()
-        output = stdout.decode() if stdout else ""
+        # Collect output and send periodic updates
+        output_lines = []
+        last_update_time = datetime.now()
+        status_message = None
+
+        async def read_output():
+            """Read output line by line."""
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                decoded = line.decode().strip()
+                if decoded:
+                    output_lines.append(decoded)
+                    log.info(f"[{task_name}] {decoded}")
+
+        # Start reading output
+        read_task = asyncio.create_task(read_output())
+
+        # Send periodic log updates while waiting
+        while not read_task.done() or process.returncode is None:
+            await asyncio.sleep(5)  # Check every 5 seconds
+
+            # Send a log update every 30 seconds if there's new output
+            if output_lines and (datetime.now() - last_update_time).seconds >= 30:
+                recent_lines = output_lines[-10:]  # Last 10 lines
+                log_text = "\n".join(recent_lines)
+
+                if len(log_text) > 1900:
+                    log_text = log_text[-1900:]
+
+                try:
+                    if status_message:
+                        await status_message.edit(content=f"📋 **Live Log:**\n```\n{log_text}\n```")
+                    else:
+                        status_message = await interaction.followup.send(
+                            f"📋 **Live Log:**\n```\n{log_text}\n```"
+                        )
+                    last_update_time = datetime.now()
+                except Exception as e:
+                    log.warning(f"Failed to send log update: {e}")
+
+            # Check if process finished
+            if process.returncode is not None:
+                break
+
+        # Ensure we've read all output
+        await read_task
+        await process.wait()
+
+        output = "\n".join(output_lines)
 
         # Remove from running tasks
         if user_id in running_tasks:
             del running_tasks[user_id]
 
-        # Determine success/failure
+        # Determine success/failure and ping the user
         if process.returncode == 0:
             embed = discord.Embed(
                 title=f"✅ {task_name} Complete",
@@ -423,7 +472,13 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
             )
             # Try to extract success details from output
             if "SUCCESS" in output:
-                embed.description = "Reservation confirmed!"
+                # Find the success line and court info
+                for line in output_lines:
+                    if "SUCCESS" in line or "Reservation saved" in line:
+                        embed.description = f"🎉 {line}"
+                        break
+                else:
+                    embed.description = "Reservation confirmed!"
         else:
             embed = discord.Embed(
                 title=f"❌ {task_name} Failed",
@@ -431,11 +486,23 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
                 timestamp=datetime.now()
             )
             # Show last few lines of output for debugging
-            last_lines = "\n".join(output.strip().split("\n")[-5:])
+            last_lines = "\n".join(output_lines[-8:])
             if last_lines:
-                embed.description = f"```\n{last_lines[:1000]}\n```"
+                embed.description = f"```\n{last_lines[:1500]}\n```"
 
-        await interaction.followup.send(embed=embed)
+        # Add full log as a field if not too long
+        if len(output) <= 1000:
+            embed.add_field(name="📜 Full Log", value=f"```\n{output}\n```", inline=False)
+
+        # Ping the user with the result
+        await interaction.followup.send(content=user_mention, embed=embed)
+
+        # Delete the live log message if it exists
+        if status_message:
+            try:
+                await status_message.delete()
+            except:
+                pass
 
     except Exception as e:
         log.error(f"Error running script: {e}")
@@ -445,11 +512,11 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
 
         embed = discord.Embed(
             title=f"❌ {task_name} Error",
-            description=str(e)[:1000],
+            description=f"```\n{str(e)[:1500]}\n```",
             color=discord.Color.red(),
             timestamp=datetime.now()
         )
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(content=user_mention, embed=embed)
 
 
 def _validate_time(time_str: str) -> bool:
