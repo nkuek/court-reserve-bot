@@ -14,9 +14,11 @@ Commands:
 """
 
 import asyncio
+import io
 import logging
 import os
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -56,8 +58,83 @@ VALID_EVENTS = [
     "Pickleball Open Play - Advanced",
 ]
 
-# Track running tasks
-running_tasks: dict[int, asyncio.subprocess.Process] = {}
+# Common booking times (evening hours)
+COMMON_TIMES = [
+    "8:00", "10:30", "18:00", "21:00",
+]
+
+# Common date options
+COMMON_DATES = [
+    ("latest", "5 days from now (earliest booking)"),
+    ("tomorrow", "Tomorrow"),
+    ("today", "Today"),
+    ("+2d", "2 days from now"),
+    ("+3d", "3 days from now"),
+    ("+4d", "4 days from now"),
+]
+
+# Track running tasks: user_id -> list of (task_id, process, description)
+running_tasks: dict[int, list[tuple[str, asyncio.subprocess.Process, str]]] = {}
+
+
+async def time_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for time parameter."""
+    if not current:
+        # Show common evening times
+        return [
+            app_commands.Choice(name=f"{t} ({_format_12h(t)})", value=t)
+            for t in COMMON_TIMES
+        ][:25]
+
+    # Filter times that match what user typed
+    matches = [t for t in COMMON_TIMES if t.startswith(current)]
+
+    # Also allow custom times if they typed a valid format
+    if ":" in current and current not in matches:
+        matches.insert(0, current)
+
+    return [
+        app_commands.Choice(name=f"{t} ({_format_12h(t)})", value=t)
+        for t in matches
+    ][:25]
+
+
+async def date_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for date parameter."""
+    if not current:
+        return [
+            app_commands.Choice(name=f"{value} — {desc}", value=value)
+            for value, desc in COMMON_DATES
+        ]
+
+    # Filter by what user typed
+    matches = [(v, d) for v, d in COMMON_DATES if current.lower() in v.lower() or current.lower() in d.lower()]
+
+    # Allow custom date formats
+    if not matches:
+        return [app_commands.Choice(name=current, value=current)]
+
+    return [
+        app_commands.Choice(name=f"{value} — {desc}", value=value)
+        for value, desc in matches
+    ][:25]
+
+
+def _format_12h(time_str: str) -> str:
+    """Convert 24h time to 12h format for display."""
+    try:
+        hour, minute = map(int, time_str.split(":"))
+        period = "AM" if hour < 12 else "PM"
+        display_hour = hour % 12 or 12
+        return f"{display_hour}:{minute:02d} {period}"
+    except:
+        return time_str
 
 
 def get_python_path() -> str:
@@ -106,8 +183,8 @@ async def help_command(interaction: discord.Interaction):
         name="🔐 Getting Started",
         value=(
             "First, register your CourtReserve credentials:\n"
-            "```/register email:you@example.com password:yourpass```\n"
-            "Your credentials are encrypted and stored securely."
+            "```/register```\n"
+            "A secure popup form will appear. Your credentials are encrypted."
         ),
         inline=False,
     )
@@ -178,41 +255,59 @@ async def help_command(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+class RegisterModal(discord.ui.Modal, title="CourtReserve Login"):
+    """Modal for registering credentials securely."""
+
+    email = discord.ui.TextInput(
+        label="Email",
+        placeholder="your.email@example.com",
+        required=True,
+        max_length=100,
+    )
+
+    password = discord.ui.TextInput(
+        label="Password (only you can see this form)",
+        placeholder="Your CourtReserve password",
+        required=True,
+        max_length=100,
+        style=discord.TextStyle.short,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            save_user_credentials(
+                interaction.user.id,
+                str(self.email),
+                str(self.password),
+            )
+
+            embed = discord.Embed(
+                title="✅ Registration Successful",
+                description=(
+                    f"Your credentials have been saved securely.\n\n"
+                    f"**Email:** {self.email}\n"
+                    f"**Password:** {'•' * len(str(self.password))}\n\n"
+                    f"You can now use `/book` and `/openplay` commands!"
+                ),
+                color=discord.Color.green(),
+            )
+            embed.set_footer(text="Use /unregister to delete your credentials.")
+
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            log.info(f"User {interaction.user.id} registered")
+
+        except Exception as e:
+            log.error(f"Failed to register user {interaction.user.id}: {e}")
+            await interaction.response.send_message(
+                f"❌ Failed to save credentials: {e}",
+                ephemeral=True
+            )
+
+
 @tree.command(name="register", description="Save your CourtReserve credentials")
-@app_commands.describe(
-    email="Your CourtReserve email address",
-    password="Your CourtReserve password",
-)
-async def register(
-    interaction: discord.Interaction,
-    email: str,
-    password: str,
-):
-    """Register user credentials for booking."""
-    try:
-        save_user_credentials(interaction.user.id, email, password)
-
-        embed = discord.Embed(
-            title="✅ Registration Successful",
-            description=(
-                f"Your credentials have been saved securely.\n\n"
-                f"**Email:** {email}\n"
-                f"**Password:** {'•' * len(password)}\n\n"
-                f"You can now use `/book` and `/openplay` commands!"
-            ),
-            color=discord.Color.green(),
-        )
-        embed.set_footer(text="Use /unregister to delete your credentials.")
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        log.info(f"User {interaction.user.id} registered")
-
-    except Exception as e:
-        log.error(f"Failed to register user {interaction.user.id}: {e}")
-        await interaction.response.send_message(
-            f"❌ Failed to save credentials: {e}",
-            ephemeral=True
-        )
+async def register(interaction: discord.Interaction):
+    """Open a secure form to register credentials."""
+    await interaction.response.send_modal(RegisterModal())
 
 
 @tree.command(name="unregister", description="Delete your saved credentials")
@@ -245,6 +340,7 @@ async def unregister(interaction: discord.Interaction):
     app_commands.Choice(name="2.5 hours", value=2.5),
     app_commands.Choice(name="3 hours", value=3.0),
 ])
+@app_commands.autocomplete(time=time_autocomplete, date=date_autocomplete)
 async def book(
     interaction: discord.Interaction,
     time: str,
@@ -305,7 +401,8 @@ async def book(
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # Run the booking script in background
-    asyncio.create_task(_run_script(interaction, cmd, "Court Booking"))
+    task_desc = f"Court Booking: {date} @ {time}"
+    asyncio.create_task(_run_script(interaction, cmd, "Court Booking", task_desc))
 
 
 @tree.command(name="openplay", description="Register for an open play event")
@@ -319,6 +416,7 @@ async def book(
     app_commands.Choice(name="Intermediate", value="Pickleball Open Play - Intermediate"),
     app_commands.Choice(name="Advanced", value="Pickleball Open Play - Advanced"),
 ])
+@app_commands.autocomplete(date=date_autocomplete)
 async def openplay(
     interaction: discord.Interaction,
     event: str = "Pickleball Open Play - Intermediate",
@@ -368,7 +466,115 @@ async def openplay(
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # Run the script in background
-    asyncio.create_task(_run_script(interaction, cmd, "Open Play Registration"))
+    event_short = event.replace("Pickleball Open Play - ", "")
+    task_desc = f"Open Play: {event_short} on {date}"
+    asyncio.create_task(_run_script(interaction, cmd, "Open Play Registration", task_desc))
+
+
+class CancelSelectMenu(discord.ui.Select):
+    """Dropdown menu for selecting which task to cancel."""
+
+    def __init__(self, tasks: list[tuple[str, asyncio.subprocess.Process, str]]):
+        self.tasks = {t[0]: t for t in tasks}  # Map task_id -> task tuple
+        options = [
+            discord.SelectOption(
+                label=desc[:100],
+                value=task_id,
+                description=f"Task ID: {task_id}",
+            )
+            for task_id, _, desc in tasks
+        ]
+        # Add "Cancel All" option
+        options.append(
+            discord.SelectOption(
+                label="Cancel All Tasks",
+                value="__all__",
+                description=f"Cancel all {len(tasks)} running task(s)",
+                emoji="🗑️",
+            )
+        )
+        super().__init__(placeholder="Select a task to cancel...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
+        selected = self.values[0]
+
+        if selected == "__all__":
+            # Cancel all tasks
+            tasks_to_cancel = list(self.tasks.values())
+        else:
+            # Cancel specific task
+            tasks_to_cancel = [self.tasks[selected]] if selected in self.tasks else []
+
+        cancelled = []
+        for task_id, process, desc in tasks_to_cancel:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+            cancelled.append(desc)
+
+            # Remove from running_tasks
+            if user_id in running_tasks:
+                running_tasks[user_id] = [
+                    t for t in running_tasks[user_id] if t[0] != task_id
+                ]
+                if not running_tasks[user_id]:
+                    del running_tasks[user_id]
+
+        if cancelled:
+            cancelled_list = "\n".join(f"• {d}" for d in cancelled)
+            await interaction.response.edit_message(
+                content=f"✅ Cancelled {len(cancelled)} task(s):\n{cancelled_list}",
+                view=None,
+            )
+        else:
+            await interaction.response.edit_message(
+                content="❌ Task not found (may have already finished).",
+                view=None,
+            )
+
+
+class CancelView(discord.ui.View):
+    """View containing the cancel select menu."""
+
+    def __init__(self, tasks: list[tuple[str, asyncio.subprocess.Process, str]]):
+        super().__init__(timeout=60)
+        self.add_item(CancelSelectMenu(tasks))
+
+
+class FullLogView(discord.ui.View):
+    """View with a button to show the full log."""
+
+    def __init__(self, full_log: str, task_name: str):
+        super().__init__(timeout=300)  # 5 minute timeout
+        self.full_log = full_log
+        self.task_name = task_name
+
+    @discord.ui.button(label="View Full Log", style=discord.ButtonStyle.secondary, emoji="📜")
+    async def view_log(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Send the full log as a file attachment."""
+        # Create a text file with the log
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"log_{timestamp}.txt"
+
+        file = discord.File(
+            io.BytesIO(self.full_log.encode("utf-8")),
+            filename=filename,
+        )
+
+        await interaction.response.send_message(
+            f"📜 **Full log for {self.task_name}:**",
+            file=file,
+            ephemeral=True,
+        )
+
+        # Disable the button after use
+        button.disabled = True
+        button.label = "Log Sent"
+        await interaction.message.edit(view=self)
 
 
 @tree.command(name="cancel", description="Cancel a running booking task")
@@ -376,36 +582,64 @@ async def cancel(interaction: discord.Interaction):
     """Cancel any running booking task for this user."""
     user_id = interaction.user.id
 
-    if user_id in running_tasks:
-        process = running_tasks[user_id]
-        process.terminate()
-        del running_tasks[user_id]
-        await interaction.response.send_message(
-            "✅ Cancelled your running booking task.",
-            ephemeral=True
-        )
+    if user_id in running_tasks and running_tasks[user_id]:
+        tasks = running_tasks[user_id]
+
+        if len(tasks) == 1:
+            # Only one task, cancel it directly
+            task_id, process, desc = tasks[0]
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+            del running_tasks[user_id]
+            await interaction.response.send_message(
+                f"✅ Cancelled: {desc}",
+                ephemeral=True,
+            )
+        else:
+            # Multiple tasks, show selection menu
+            view = CancelView(tasks)
+            task_list = "\n".join(f"• `{t[0]}` — {t[2]}" for t in tasks)
+            await interaction.response.send_message(
+                f"You have **{len(tasks)}** running tasks:\n{task_list}\n\nSelect which to cancel:",
+                view=view,
+                ephemeral=True,
+            )
     else:
         await interaction.response.send_message(
             "❌ You don't have any running booking tasks.",
-            ephemeral=True
+            ephemeral=True,
         )
 
 
-async def _run_script(interaction: discord.Interaction, cmd: list[str], task_name: str):
+async def _run_script(interaction: discord.Interaction, cmd: list[str], task_name: str, task_desc: str = ""):
     """Run a booking script and report results with live log updates."""
     user_id = interaction.user.id
     user_mention = interaction.user.mention
+    task_id = str(uuid.uuid4())[:8]  # Short unique ID
 
     try:
+        # Build environment with headless mode enabled
+        env = os.environ.copy()
+        env["HEADLESS"] = "true"
+
         # Start the process
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=get_script_dir(),
+            env=env,
         )
 
-        running_tasks[user_id] = process
+        # Track this task
+        if user_id not in running_tasks:
+            running_tasks[user_id] = []
+        description = task_desc or task_name
+        running_tasks[user_id].append((task_id, process, description))
 
         # Collect output and send periodic updates
         output_lines = []
@@ -466,9 +700,13 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
 
         output = "\n".join(output_lines)
 
-        # Remove from running tasks
+        # Remove this specific task from running tasks
         if user_id in running_tasks:
-            del running_tasks[user_id]
+            running_tasks[user_id] = [
+                t for t in running_tasks[user_id] if t[0] != task_id
+            ]
+            if not running_tasks[user_id]:
+                del running_tasks[user_id]
 
         # Determine success/failure and notify user clearly
         if process.returncode == 0:
@@ -528,21 +766,28 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
             )
             embed.set_footer(text="Need help? Check the logs above for more details.")
 
-        # Add condensed log as a field if not too long
+        # Add log preview and full log button
+        view = FullLogView(output, task_name) if output else None
+
         if len(output) <= 800:
             embed.add_field(name="📜 Full Log", value=f"```\n{output}\n```", inline=False)
+            view = None  # No need for button if log fits
         elif len(output) <= 1500:
-            # Show truncated log
+            # Show truncated log with button for full
             embed.add_field(name="📜 Log (truncated)", value=f"```\n...{output[-700:]}\n```", inline=False)
+        else:
+            # Show last few lines with button for full
+            embed.add_field(name="📜 Log (truncated)", value=f"```\n...{output[-500:]}\n```", inline=False)
 
         # Send result via DM for privacy
         try:
-            await interaction.user.send(embed=embed)
+            await interaction.user.send(embed=embed, view=view)
         except discord.Forbidden:
             # User has DMs disabled, fall back to followup
             await interaction.followup.send(
                 content=f"{user_mention} (couldn't DM you - enable DMs for private results)",
-                embed=embed
+                embed=embed,
+                view=view,
             )
 
         # Delete the live log message if it exists
@@ -555,8 +800,13 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
     except Exception as e:
         log.error(f"Error running script: {e}")
 
+        # Remove this specific task from running tasks
         if user_id in running_tasks:
-            del running_tasks[user_id]
+            running_tasks[user_id] = [
+                t for t in running_tasks[user_id] if t[0] != task_id
+            ]
+            if not running_tasks[user_id]:
+                del running_tasks[user_id]
 
         embed = discord.Embed(
             title=f"💥 {task_name} - ERROR",
