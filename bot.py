@@ -428,10 +428,10 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
 
         # Send periodic log updates while waiting
         while not read_task.done() or process.returncode is None:
-            await asyncio.sleep(5)  # Check every 5 seconds
+            await asyncio.sleep(3)  # Check every 3 seconds
 
-            # Send a log update every 30 seconds if there's new output
-            if output_lines and (datetime.now() - last_update_time).seconds >= 30:
+            # Send a log update every 10 seconds if there's new output
+            if output_lines and (datetime.now() - last_update_time).seconds >= 10:
                 recent_lines = output_lines[-10:]  # Last 10 lines
                 log_text = "\n".join(recent_lines)
 
@@ -470,36 +470,70 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
         if user_id in running_tasks:
             del running_tasks[user_id]
 
-        # Determine success/failure and ping the user
+        # Determine success/failure and notify user clearly
         if process.returncode == 0:
+            # SUCCESS - Green embed with celebration
             embed = discord.Embed(
-                title=f"✅ {task_name} Complete",
+                title=f"🎉 {task_name} - SUCCESS!",
                 color=discord.Color.green(),
                 timestamp=datetime.now()
             )
-            # Try to extract success details from output
-            if "SUCCESS" in output:
-                # Find the success line and court info
-                for line in output_lines:
-                    if "SUCCESS" in line or "Reservation saved" in line:
-                        embed.description = f"🎉 {line}"
-                        break
-                else:
-                    embed.description = "Reservation confirmed!"
+
+            # Extract useful details from output
+            success_details = []
+            for line in output_lines:
+                line_lower = line.lower()
+                if any(keyword in line_lower for keyword in ["success", "reservation saved", "registered", "booked", "confirmed"]):
+                    # Clean up the line (remove timestamps and log prefixes)
+                    clean_line = line.split("]")[-1].strip() if "]" in line else line
+                    success_details.append(clean_line)
+                elif "court" in line_lower and (":" in line or "selected" in line_lower):
+                    clean_line = line.split("]")[-1].strip() if "]" in line else line
+                    success_details.append(clean_line)
+
+            if success_details:
+                embed.description = "✅ " + "\n✅ ".join(success_details[:3])  # Top 3 relevant lines
+            else:
+                embed.description = "✅ Your reservation was completed successfully!"
+
+            embed.set_footer(text="You're all set! See you on the court 🏸")
+
         else:
+            # FAILURE - Red embed with clear error info
             embed = discord.Embed(
-                title=f"❌ {task_name} Failed",
+                title=f"❌ {task_name} - FAILED",
                 color=discord.Color.red(),
                 timestamp=datetime.now()
             )
-            # Show last few lines of output for debugging
-            last_lines = "\n".join(output_lines[-8:])
-            if last_lines:
-                embed.description = f"```\n{last_lines[:1500]}\n```"
 
-        # Add full log as a field if not too long
-        if len(output) <= 1000:
+            # Try to find the actual error message
+            error_lines = []
+            for line in output_lines:
+                line_lower = line.lower()
+                if any(keyword in line_lower for keyword in ["error", "failed", "unavailable", "exception", "could not", "unable"]):
+                    clean_line = line.split("]")[-1].strip() if "]" in line else line
+                    error_lines.append(clean_line)
+
+            if error_lines:
+                embed.description = "**What went wrong:**\n" + "\n".join(error_lines[-3:])  # Last 3 error lines
+            else:
+                # Fall back to last few lines
+                last_lines = "\n".join(output_lines[-5:])
+                embed.description = f"**Last output:**\n```\n{last_lines[:1000]}\n```"
+
+            embed.add_field(
+                name="💡 What to do",
+                value="Try running the command again, or check if the court/event is still available.",
+                inline=False
+            )
+            embed.set_footer(text="Need help? Check the logs above for more details.")
+
+        # Add condensed log as a field if not too long
+        if len(output) <= 800:
             embed.add_field(name="📜 Full Log", value=f"```\n{output}\n```", inline=False)
+        elif len(output) <= 1500:
+            # Show truncated log
+            embed.add_field(name="📜 Log (truncated)", value=f"```\n...{output[-700:]}\n```", inline=False)
 
         # Send result via DM for privacy
         try:
@@ -525,11 +559,18 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
             del running_tasks[user_id]
 
         embed = discord.Embed(
-            title=f"❌ {task_name} Error",
-            description=f"```\n{str(e)[:1500]}\n```",
+            title=f"💥 {task_name} - ERROR",
+            description=f"**An unexpected error occurred:**\n```\n{str(e)[:1000]}\n```",
             color=discord.Color.red(),
             timestamp=datetime.now()
         )
+        embed.add_field(
+            name="💡 What to do",
+            value="This is usually a temporary issue. Try again in a few minutes.",
+            inline=False
+        )
+        embed.set_footer(text="If the problem persists, check the Fly.io logs.")
+
         # Send error via DM for privacy
         try:
             await interaction.user.send(embed=embed)

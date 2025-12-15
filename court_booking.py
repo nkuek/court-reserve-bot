@@ -430,6 +430,9 @@ def main(
             # Continue to next court
     else:
         # This runs if we didn't break (no court was booked)
+        log.error("=" * 50)
+        log.error("BOOKING FAILED - No courts available")
+        log.error("=" * 50)
         notify_failure(
             f"Could not book any court for {reservation_time}.\n"
             f"All {len(COURTS)} courts were either unavailable or booking failed.\n"
@@ -438,11 +441,31 @@ def main(
             f"  - The booking window hasn't opened yet\n"
             f"  - There was a conflict with existing reservations"
         )
+        driver.quit()
+        sys.exit(1)  # Exit with error code so bot knows it failed
 
     log.info("Closing browser...")
     driver.quit()
     log.info("Done.")
 
 
+def run():
+    """Entry point with error handling."""
+    try:
+        app()
+    except SystemExit:
+        # Re-raise SystemExit (from sys.exit) without wrapping
+        raise
+    except Exception as e:
+        error_type = type(e).__name__
+        log.error(f"Booking failed ({error_type}): {e}")
+        notify_failure(f"Court booking failed.\n{error_type}: {e}")
+        try:
+            get_driver().quit()
+        except:
+            pass
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    app()
+    run()

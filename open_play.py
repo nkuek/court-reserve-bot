@@ -178,12 +178,18 @@ def run():
     """Entry point with error handling."""
     try:
         app()
+    except SystemExit:
+        # Re-raise SystemExit (from sys.exit) without wrapping
+        raise
     except Exception as e:
         error_type = type(e).__name__
         log.error(f"Registration failed ({error_type}): {e}")
         notify_failure(f"Open Play registration failed.\n{error_type}: {e}")
-        get_driver().quit()
-        raise
+        try:
+            get_driver().quit()
+        except:
+            pass
+        sys.exit(1)
 
 
 if __name__ == "__main__":
