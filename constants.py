@@ -28,7 +28,17 @@ def get_driver():
             from selenium.webdriver.chrome.options import Options
 
             options = Options()
-            options.add_argument("--window-size=1920,1080")
+
+            # Essential flags for Raspberry Pi
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--disable-software-rasterizer")
+
+            # Headless mode (required for Pi without display)
+            options.add_argument("--headless=new")
+
+            # Memory optimizations for Pi
             options.add_argument("--disable-extensions")
             options.add_argument("--disable-logging")
             options.add_argument("--disable-infobars")
@@ -38,15 +48,11 @@ def get_driver():
             options.add_argument("--disable-background-networking")
             options.add_argument("--disable-sync")
             options.add_argument("--disable-translate")
+            options.add_argument("--disable-features=VizDisplayCompositor")
+            options.add_argument("--window-size=1280,720")
 
-            if chrome_path:
-                options.binary_location = chrome_path
-
-            if headless:
-                options.add_argument("--headless=new")
-                options.add_argument("--disable-gpu")
-                options.add_argument("--no-sandbox")
-                options.add_argument("--disable-dev-shm-usage")
+            # Explicitly set the binary location for Raspberry Pi
+            options.binary_location = chrome_path or "/usr/bin/chromium-browser"
 
             # Use system chromedriver
             service = Service("/usr/bin/chromedriver")
