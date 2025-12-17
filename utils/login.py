@@ -1,14 +1,9 @@
 import logging
 import os
-import time
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-
 import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from constants import get_driver, BASE_URL
-from utils.find import find
+from constants import get_page, BASE_URL
 from utils.exceptions import LoginError
 
 log = logging.getLogger(__name__)
@@ -33,22 +28,38 @@ def login():
             f"    PASSWORD=your_password"
         )
 
-    driver = get_driver()
+    page = get_page()
     log.info("Logging in...")
-    driver.get(f"{BASE_URL}/Account/Login")
-    time.sleep(2)  # Wait for page to fully load
+    page.goto(f"{BASE_URL}/Account/Login")
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(2000)  # Wait for JS to load
 
-    form = find((By.CSS_SELECTOR, "form"), timeout=15)
-    inputs = form.find_elements(By.TAG_NAME, "input")
+    # Find and fill form inputs
+    form = page.locator("form").first
+    inputs = form.locator("input").all()
+    
+    # Filter to visible inputs
+    visible_inputs = [i for i in inputs if i.get_attribute("type") not in ["hidden"]]
+    
+    if len(visible_inputs) >= 2:
+        # First input is email, second is password
+        visible_inputs[0].fill(email)
+        visible_inputs[1].fill(password)
+    else:
+        raise LoginError("Could not find login form inputs")
 
-    inputs[0].send_keys(email)
-    inputs[1].send_keys(password)
+    # Click submit button
+    submit_btn = form.locator("button[type='submit'], input[type='submit'], button:has-text('Log'), button:has-text('Sign')").first
+    submit_btn.click()
 
-    form.submit()
-
-    # Wait for login to complete by checking URL no longer contains /Login
+    # Wait for redirect (login completion)
     log.info("  Waiting for login to complete...")
-    WebDriverWait(driver, 30).until(
-        EC.url_changes(f"{BASE_URL}/Account/Login")
-    )
-    log.info("  Login successful")
+    try:
+        page.wait_for_url(lambda url: "Login" not in url and "LogIn" not in url, timeout=15000)
+        log.info("  Login successful")
+    except Exception as e:
+        current_url = page.url
+        if "Login" in current_url or "LogIn" in current_url:
+            raise LoginError(f"Login failed - still on login page: {current_url}")
+        # If we're not on login page, we might have succeeded
+        log.info("  Login successful")

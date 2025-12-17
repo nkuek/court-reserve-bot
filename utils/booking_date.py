@@ -1,19 +1,13 @@
 import logging
-import time
 from datetime import datetime, timedelta
-from selenium.webdriver.common.by import By
 
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from constants import get_driver, BASE_URL
-from utils.find import find
+from constants import get_page, BASE_URL, ORG_ID, SCHEDULE_ID, MAX_DAYS_AHEAD
 from utils.exceptions import DateSelectionError
 
 log = logging.getLogger(__name__)
-
-# Maximum days in advance you can book
-MAX_DAYS_AHEAD = 5
 
 
 def parse_booking_date(value: str | None) -> datetime:
@@ -112,9 +106,10 @@ def select_booking_date(date: str | datetime | None = None):
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     days_ahead = (target_date - today).days
 
-    driver = get_driver()
+    page = get_page()
     log.info("Navigating to bookings page...")
-    driver.get(f"{BASE_URL}/Online/Reservations/Bookings/8449?sId=18493")
+    page.goto(f"{BASE_URL}/Online/Reservations/Bookings/{ORG_ID}?sId={SCHEDULE_ID}")
+    page.wait_for_load_state("networkidle")
 
     # Create friendly label
     if days_ahead == 0:
@@ -128,8 +123,11 @@ def select_booking_date(date: str | datetime | None = None):
 
     log.info(f"Selecting date: {target_date.strftime('%Y-%m-%d')} ({day_label})")
 
+    # Find and click the date picker
     try:
-        date_picker = find((By.CSS_SELECTOR, 'a[data-testid="link-0"]'), timeout=15)
+        date_picker = page.locator('a[data-testid="link-0"]')
+        date_picker.wait_for(timeout=15000)
+        date_picker.click()
     except Exception as e:
         raise DateSelectionError(
             f"Could not find the date picker on the bookings page.\n"
@@ -137,15 +135,16 @@ def select_booking_date(date: str | datetime | None = None):
             f"  Original error: {e}"
         )
 
-    date_picker.click()
-    time.sleep(1)  # Wait for date picker to open
+    page.wait_for_timeout(1000)  # Wait for date picker to open
 
     # Format: YYYY/M/D (month is 0-indexed in JS, but not in Python)
     # The original JS uses: futureDate.getMonth() which is 0-indexed
     formatted_date = f"{target_date.year}/{target_date.month - 1}/{target_date.day}"
 
     try:
-        date_element = find((By.CSS_SELECTOR, f'a[data-value="{formatted_date}"]'), timeout=10)
+        date_element = page.locator(f'a[data-value="{formatted_date}"]')
+        date_element.wait_for(timeout=10000)
+        date_element.click()
     except Exception as e:
         if days_ahead == MAX_DAYS_AHEAD:
             hint = "Bookings typically open 5 days in advance at a specific time."
@@ -157,5 +156,4 @@ def select_booking_date(date: str | datetime | None = None):
             f"  Original error: {e}"
         )
 
-    date_element.click()
     log.info("  Date selected")

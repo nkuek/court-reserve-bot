@@ -4,7 +4,7 @@ Open Play registration script for CourtReserve.
 
 Usage:
     python open_play.py
-    python open_play.py --event "Pickleball Open Play - Advanced"
+    python open_play.py --date tomorrow
 """
 
 import logging
@@ -15,10 +15,8 @@ from typing import Annotated
 
 import typer
 from dotenv import load_dotenv
-from selenium.webdriver.common.by import By
 
-from constants import get_driver
-from utils.find import find
+from constants import get_page, close_browser
 from utils.login import login
 from utils.booking_date import select_booking_date, parse_booking_date
 from utils.discord import notify_open_play_success, notify_failure, notify_start
@@ -39,18 +37,9 @@ log = logging.getLogger(__name__)
 
 app = typer.Typer(help="Register for Open Play events on CourtReserve.")
 
-DEFAULT_EVENT = "Pickleball Open Play - Intermediate"
-
 
 @app.command()
 def main(
-    event_name: Annotated[
-        str,
-        typer.Option(
-            "--event", "-e",
-            help="Name of the Open Play event to register for",
-        ),
-    ] = DEFAULT_EVENT,
     wait_until_time: Annotated[
         str | None,
         typer.Option(
@@ -101,43 +90,62 @@ def main(
     booking_date = parse_booking_date(date)
     booking_date_str = booking_date.strftime("%a %m/%d")  # e.g., "Sat 12/14"
 
-    driver = get_driver()
+    # Open play events are only on Tuesdays (1) and Thursdays (3)
+    day_of_week = booking_date.weekday()
+    if day_of_week not in (1, 3):  # 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
+        day_name = booking_date.strftime("%A")
+        raise typer.BadParameter(
+            f"{booking_date_str} is a {day_name}.\n"
+            f"  Open Play events are only on Tuesdays and Thursdays.\n"
+            f"  Please choose a different date."
+        )
+
+    page = get_page()
 
     log.info("=" * 50)
     log.info("OPEN PLAY REGISTRATION STARTED")
     log.info(f"  Date: {booking_date_str}")
-    log.info(f"  Event: {event_name}")
     log.info("=" * 50)
 
-    notify_start("Open Play Registration", f"**Date:** {booking_date_str}\n**Event:** {event_name}")
+    notify_start("Open Play Registration", f"**Date:** {booking_date_str}")
 
     login()
     select_booking_date(booking_date)
 
-    log.info(f"Looking for {event_name}...")
+    log.info("Looking for Pickleball Open Play event...")
 
+    # Find any Pickleball Open Play event on this date
     try:
-        details_link = find(
-            (
-                By.XPATH,
-                f"//span[@data-testid='reservation-name' and contains(., '{event_name}')]"
-                "/ancestor::div[contains(@class,'reservation-container')]"
-                "//a[@data-testid='event-btn-detail' and normalize-space(.)='Details']",
-            )
+        # First, find the event name element to log what we found
+        event_name_locator = page.locator(
+            "span[data-testid='reservation-name']:has-text('Pickleball Open Play')"
         )
+        event_name_locator.first.wait_for(timeout=10000)
+        event_name = (event_name_locator.first.text_content() or "").strip()
+        log.info(f"  Found event: {event_name}")
+
+        # Now find the Details link for this event
+        details_link = page.locator(
+            "span[data-testid='reservation-name']:has-text('Pickleball Open Play')"
+        ).locator("xpath=ancestor::div[contains(@class,'reservation-container')]").locator(
+            "a[data-testid='event-btn-detail']:has-text('Details')"
+        ).first
+        details_link.wait_for(timeout=10000)
     except Exception as e:
         raise Exception(
-            f"Could not find '{event_name}' event on the selected date.\n"
+            f"Could not find any Pickleball Open Play event on {booking_date_str}.\n"
+            f"  Intermediate events are typically on Tuesdays, Thursday events on Thursdays.\n"
             f"  The event may not be scheduled for this day, or registration hasn't opened.\n"
             f"  Original error: {e}"
         )
 
     details_link.click()
-    log.info("  Found event, clicked Details")
+    log.info("  Clicked Details")
 
     log.info("Clicking Register link...")
     try:
-        register_link = find((By.LINK_TEXT, "Register"))
+        register_link = page.locator("a:has-text('Register')").first
+        register_link.wait_for(timeout=10000)
     except Exception as e:
         raise Exception(
             f"Could not find 'Register' link for '{event_name}'.\n"
@@ -150,9 +158,8 @@ def main(
 
     log.info("Finalizing registration...")
     try:
-        finalize_button = find(
-            (By.XPATH, "//button[normalize-space(.)='Finalize Registration']")
-        )
+        finalize_button = page.locator("button:has-text('Finalize Registration')")
+        finalize_button.wait_for(timeout=10000)
     except Exception as e:
         raise Exception(
             f"Could not find 'Finalize Registration' button.\n"
@@ -170,7 +177,7 @@ def main(
     notify_open_play_success(event_name, booking_date_str)
 
     log.info("Closing browser...")
-    driver.quit()
+    close_browser()
     log.info("Done.")
 
 
@@ -185,10 +192,7 @@ def run():
         error_type = type(e).__name__
         log.error(f"Registration failed ({error_type}): {e}")
         notify_failure(f"Open Play registration failed.\n{error_type}: {e}")
-        try:
-            get_driver().quit()
-        except:
-            pass
+        close_browser()
         sys.exit(1)
 
 

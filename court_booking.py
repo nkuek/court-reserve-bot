@@ -17,11 +17,11 @@ from typing import Annotated
 
 import typer
 from dotenv import load_dotenv
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 
-from constants import get_driver, BASE_URL
-from utils.find import find
+from constants import (
+    get_page, close_browser, COURTS, VALID_DURATIONS,
+    FACILITY_CLOSING_HOUR, FACILITY_CLOSING_MINUTE
+)
 from utils.login import login
 from utils.booking_date import select_booking_date, parse_booking_date
 from utils.discord import notify_success, notify_failure, notify_start
@@ -42,13 +42,6 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 app = typer.Typer(help="Book a pickleball court on CourtReserve.")
-
-# Valid duration options
-VALID_DURATIONS = [1.0, 1.5, 2.0, 2.5, 3.0]
-
-# Facility closes at 23:00
-FACILITY_CLOSING_HOUR = 23
-FACILITY_CLOSING_MINUTE = 0
 
 
 def validate_time(value: str) -> str:
@@ -94,36 +87,23 @@ def duration_to_index(hours: float) -> int:
     return index if index >= 0 else -1
 
 
-# Court priority list
-COURTS = [
-    "Pickleball Court 5C (Bubble B)",
-    "Pickleball Court 5B (Bubble B)",
-    "Pickleball Court 5A (Bubble B)",
-    "Pickleball Court 6A (Bubble B)",
-    "Pickleball Court 6B (Bubble B)",
-    "Pickleball Court 6C (Bubble B)",
-    "Pickleball Court #7A (Bubble B)",
-    "Pickleball Court #7B (Bubble B)",
-    "Pickleball Court #8A (Bubble B)",
-    "Pickleball Court #8B (Bubble B)",
-]
-
-
 def add_players():
     """Add 3 placeholder players to the reservation."""
     log.info("Adding placeholder players...")
+    page = get_page()
 
     for i in range(3):
-        additional_players_input = find((By.NAME, "OwnersDropdown_input"))
-        additional_players_input.send_keys("Placeholder")
+        additional_players_input = page.locator("[name='OwnersDropdown_input']")
+        additional_players_input.wait_for(timeout=10000)
+        additional_players_input.fill("Placeholder")
 
         # Wait for results to appear
-        find((By.CSS_SELECTOR, "#OwnersDropdown_listbox li"), timeout=5)
-        time.sleep(1)
+        page.locator("#OwnersDropdown_listbox li").first.wait_for(timeout=5000)
+        page.wait_for_timeout(1000)
 
-        # Highlight first option and select it via keyboard (kendo-friendly)
-        additional_players_input.send_keys(Keys.ARROW_DOWN)
-        additional_players_input.send_keys(Keys.ENTER)
+        # Select first option via keyboard
+        additional_players_input.press("ArrowDown")
+        additional_players_input.press("Enter")
         log.info(f"  Added placeholder {i + 1}/3")
 
     log.info("Successfully added all placeholders")
@@ -132,39 +112,41 @@ def add_players():
 def click_disclosure():
     """Click the disclosure agreement checkbox."""
     log.info("Clicking disclosure checkbox...")
-    disclosure_label = find((By.CSS_SELECTOR, "label[for='DisclosureAgree']"))
+    page = get_page()
+    disclosure_label = page.locator("label[for='DisclosureAgree']")
+    disclosure_label.wait_for(timeout=10000)
     disclosure_label.click()
     log.info("Disclosure accepted")
-    time.sleep(1)
+    page.wait_for_timeout(1000)
 
 
 def add_duration(duration_hours: float):
     """Set the reservation duration."""
     log.info(f"Setting duration to {duration_hours} hours...")
+    page = get_page()
 
-    duration_input = find((By.CSS_SELECTOR, "span[aria-owns='Duration_listbox']"))
+    duration_input = page.locator("span[aria-owns='Duration_listbox']")
+    duration_input.wait_for(timeout=10000)
     duration_input.click()
 
     # Wait for dropdown to open
-    find(
-        (By.CSS_SELECTOR, 'ul[data-testid="Duration-container"][aria-hidden="false"]'),
-        timeout=5,
-    )
+    page.locator('ul[data-testid="Duration-container"][aria-hidden="false"]').wait_for(timeout=5000)
 
     duration_index = duration_to_index(duration_hours)
 
     for _ in range(duration_index + 1):
-        duration_input.send_keys(Keys.ARROW_DOWN)
+        duration_input.press("ArrowDown")
 
-    duration_input.send_keys(Keys.ENTER)
+    duration_input.press("Enter")
     log.info(f"Duration set to {duration_hours} hours")
 
 
 def click_save_button(target_time: datetime):
     """Wait until target time and click the save button with high precision."""
-    driver = get_driver()
+    page = get_page()
     log.info("Preparing to click Save button...")
-    save_button = find((By.CSS_SELECTOR, 'button[data-testid="Save"]'))
+    save_button = page.locator('button[data-testid="Save"]')
+    save_button.wait_for(timeout=10000)
 
     delay = (target_time - datetime.now()).total_seconds()
 
@@ -208,26 +190,25 @@ def click_save_button(target_time: datetime):
         while datetime.now() < target_time:
             pass
 
-    # Use JavaScript click for faster execution (bypasses Selenium overhead)
-    driver.execute_script("arguments[0].click();", save_button)
+    # Use JavaScript click for faster execution
+    save_button.evaluate("el => el.click()")
 
     click_time = datetime.now()
     diff_ms = (click_time - target_time).total_seconds() * 1000
     log.info(f"CLICKED Save button at {click_time.strftime('%H:%M:%S.%f')[:-3]} (diff: {diff_ms:+.1f}ms)")
-    time.sleep(1)
+    page.wait_for_timeout(1000)
 
 
 def check_court_availability(court: str, reservation_time: str, end_time: str):
     """Check if a court is available at the specified time."""
     log.info(f"Checking court: {court} for {reservation_time}")
+    page = get_page()
 
     try:
-        start_time_btn = find(
-            (
-                By.XPATH,
-                f"//button[@data-courtlabel='{court}' and contains(text(), '{reservation_time}')]",
-            )
+        start_time_btn = page.locator(
+            f"button[data-courtlabel='{court}']:has-text('{reservation_time}')"
         )
+        start_time_btn.wait_for(timeout=5000)
         log.info(f"  Found start time {reservation_time}")
     except Exception:
         raise CourtUnavailableError(
@@ -237,12 +218,10 @@ def check_court_availability(court: str, reservation_time: str, end_time: str):
 
     try:
         # Verify the time slot is available by checking the end time
-        find(
-            (
-                By.XPATH,
-                f"//button[@data-courtlabel='{court}' and contains(text(), '{end_time}')]",
-            )
+        end_time_btn = page.locator(
+            f"button[data-courtlabel='{court}']:has-text('{end_time}')"
         )
+        end_time_btn.wait_for(timeout=5000)
         log.info(f"  Found end time {end_time} - slot available!")
     except Exception:
         raise CourtUnavailableError(
@@ -252,6 +231,49 @@ def check_court_availability(court: str, reservation_time: str, end_time: str):
         )
 
     start_time_btn.click()
+
+
+def get_available_courts(reservation_time: str, end_time: str, courts: list[str] = None) -> list[str]:
+    """
+    Find which courts have the requested time slot available.
+
+    Uses get_available_slots() from check_slots.py to get all available slots,
+    then filters to courts that have both start and end time.
+
+    Args:
+        reservation_time: Start time in 12-hour format (e.g., "10:00 AM")
+        end_time: End slot time in 12-hour format (e.g., "10:30 AM" for 1 hour booking)
+        courts: List of courts to check (defaults to all COURTS)
+
+    Returns:
+        List of court names that have the full duration available.
+    """
+    from check_slots import get_available_slots
+
+    courts_to_check = courts or COURTS
+
+    log.info(f"\nScanning availability for {reservation_time}...")
+
+    # Get all available slots using the proven check_slots logic
+    slots_by_court = get_available_slots()
+
+    # Check which courts have both start and end time
+    available = []
+    for court_name in courts_to_check:
+        court_slots = slots_by_court.get(court_name, [])
+        has_start = reservation_time in court_slots
+        has_end = end_time in court_slots
+
+        if has_start and has_end:
+            available.append(court_name)
+            log.info(f"  ✓ {court_name}: Available")
+        elif has_start:
+            log.info(f"  ✗ {court_name}: Not available (duration blocked)")
+        else:
+            log.info(f"  ✗ {court_name}: Not available")
+
+    log.info(f"\nFound {len(available)} available court(s)")
+    return available
 
 
 @app.command()
@@ -286,6 +308,13 @@ def main(
             help="Date to book. Formats: today, tomorrow, +3d, 12/15, latest (default)",
         ),
     ] = "latest",
+    court: Annotated[
+        str | None,
+        typer.Option(
+            "--court", "-c",
+            help="Specific court to book (e.g., 'Pickleball Court 5C (Bubble B)'). If not set, tries all courts.",
+        ),
+    ] = None,
     email: Annotated[
         str | None,
         typer.Option(
@@ -355,7 +384,7 @@ def main(
         )
         duration = max_duration
 
-    driver = get_driver()
+    page = get_page()
 
     # Compute target time
     target = datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -382,10 +411,30 @@ def main(
     login()
     select_booking_date(booking_date)
 
-    for court in COURTS:
+    # Scan for available courts first (only try courts that are actually available)
+    if court:
+        # User specified a specific court - still scan to verify it's available
+        available_courts = get_available_courts(reservation_time, end_time, courts=[court])
+        if not available_courts:
+            log.error(f"Court {court} is not available at {reservation_time}!")
+            notify_failure(f"Court {court} not available for {reservation_time}")
+            raise typer.Exit(1)
+        courts_to_try = available_courts
+        log.info(f"Targeting specific court: {court}")
+    else:
+        # Scan all courts to find available ones
+        available_courts = get_available_courts(reservation_time, end_time)
+        if not available_courts:
+            log.error("No courts available at the requested time!")
+            notify_failure(f"No courts available for {reservation_time}")
+            raise typer.Exit(1)
+        courts_to_try = available_courts
+        log.info(f"Will try {len(available_courts)} available court(s)")
+
+    for court_name in courts_to_try:
         try:
             try:
-                check_court_availability(court, reservation_time, end_time)
+                check_court_availability(court_name, reservation_time, end_time)
             except Exception as err:
                 log.warning(f"  {err}")
                 continue  # Try next court
@@ -397,55 +446,64 @@ def main(
             click_save_button(target)
 
             # Check for SweetAlert (error modal)
-            alerts = driver.find_elements(By.CLASS_NAME, "swal2-modal")
+            alerts = page.query_selector_all(".swal2-modal")
 
             if alerts:
                 log.warning(
-                    f"Alert detected after saving on court '{court}' - "
+                    f"Alert detected after saving on court '{court_name}' - "
                     "assuming conflict, trying next court..."
                 )
 
                 # Click the confirm button on the SweetAlert
-                confirm_button = find((By.CSS_SELECTOR, "button.swal2-confirm"))
+                confirm_button = page.locator("button.swal2-confirm")
                 confirm_button.click()
 
-                close_button = find((By.CSS_SELECTOR, 'button[data-testid="Close"]'))
+                close_button = page.locator('button[data-testid="Close"]')
                 close_button.click()
 
                 # Continue to next court (DO NOT break)
                 continue
 
             log.info("=" * 50)
-            log.info(f"SUCCESS! Reservation saved on court: {court}")
+            log.info(f"SUCCESS! Reservation saved on court: {court_name}")
             log.info("=" * 50)
 
             # Send Discord notification
-            notify_success(court, booking_date_str, reservation_time, duration)
+            notify_success(court_name, booking_date_str, reservation_time, duration)
 
             # If we got here without throwing, we consider it a success and stop
             break
 
         except Exception as err:
-            log.error(f"Unexpected error on court '{court}': {err}")
+            log.error(f"Unexpected error on court '{court_name}': {err}")
             # Continue to next court
     else:
         # This runs if we didn't break (no court was booked)
         log.error("=" * 50)
         log.error("BOOKING FAILED - No courts available")
         log.error("=" * 50)
-        notify_failure(
-            f"Could not book any court for {reservation_time}.\n"
-            f"All {len(COURTS)} courts were either unavailable or booking failed.\n"
-            f"This typically happens when:\n"
-            f"  - All courts are already booked at this time\n"
-            f"  - The booking window hasn't opened yet\n"
-            f"  - There was a conflict with existing reservations"
-        )
-        driver.quit()
+
+        if court:
+            # User specified a specific court
+            failure_msg = (
+                f"Could not book court '{court}' for {reservation_time}.\n"
+                f"The court may already be booked or unavailable."
+            )
+        else:
+            failure_msg = (
+                f"Could not book any court for {reservation_time}.\n"
+                f"All {len(COURTS)} courts were either unavailable or booking failed.\n"
+                f"This typically happens when:\n"
+                f"  - All courts are already booked at this time\n"
+                f"  - The booking window hasn't opened yet\n"
+                f"  - There was a conflict with existing reservations"
+            )
+        notify_failure(failure_msg)
+        close_browser()
         sys.exit(1)  # Exit with error code so bot knows it failed
 
     log.info("Closing browser...")
-    driver.quit()
+    close_browser()
     log.info("Done.")
 
 
@@ -460,10 +518,7 @@ def run():
         error_type = type(e).__name__
         log.error(f"Booking failed ({error_type}): {e}")
         notify_failure(f"Court booking failed.\n{error_type}: {e}")
-        try:
-            get_driver().quit()
-        except:
-            pass
+        close_browser()
         sys.exit(1)
 
 
