@@ -52,15 +52,52 @@ def get_available_slots() -> dict[str, list[str]]:
 
     log.info("Scanning for available time slots...")
 
-    # Wait a moment for the page to fully render
-    log.info("Waiting for page to fully render...")
-    page.wait_for_timeout(2000)
+    # Wait for the scheduler to fully load
+    log.info("Waiting for scheduler to load...")
+    try:
+        page.wait_for_selector(".k-scheduler-content", timeout=15000)
+        log.info("  Scheduler content found")
+    except Exception as e:
+        log.warning(f"  Scheduler load timeout: {e}")
 
-    # Find all clickable time slot buttons
-    log.info("Searching for slot buttons...")
-    slot_buttons = page.query_selector_all("button[data-courtlabel]:not([disabled])")
+    # Additional wait for dynamic content
+    page.wait_for_timeout(3000)
 
-    log.info(f"Found {len(slot_buttons)} available slot buttons")
+    # Find available slot buttons
+    # Available slots have the "slot-btn" class WITHOUT the "hide" class
+    # Reserved slots have buttons with the "hide" class (should be excluded)
+    log.info("Searching for available slot buttons...")
+
+    # Look for buttons that:
+    # 1. Have data-courtlabel attribute
+    # 2. Are not disabled
+    # 3. Have the slot-btn class (available slots)
+    # 4. Do NOT have the "hide" class (reserved slots have this)
+    slot_buttons = page.query_selector_all("button.slot-btn[data-courtlabel]:not([disabled]):not(.hide)")
+
+    log.info(f"Found {len(slot_buttons)} available slot buttons (excluding hidden)")
+
+    # Debug: Check how many total and hidden buttons exist
+    all_slot_buttons = page.query_selector_all("button.slot-btn[data-courtlabel]")
+    hidden_buttons = page.query_selector_all("button.slot-btn[data-courtlabel].hide")
+    log.info(f"  Total slot buttons: {len(all_slot_buttons)}, Hidden (reserved): {len(hidden_buttons)}")
+
+    # If no buttons found with slot-btn class, try broader search for debugging
+    if len(slot_buttons) == 0:
+        log.warning("No visible slot-btn buttons found, trying broader search...")
+        all_buttons = page.query_selector_all("button[data-courtlabel]")
+        log.info(f"  Found {len(all_buttons)} total buttons with data-courtlabel")
+
+        # Check what classes these buttons have
+        if all_buttons:
+            sample = all_buttons[0]
+            classes = sample.get_attribute("class") or ""
+            text = (sample.text_content() or "").strip()[:50]
+            log.info(f"  Sample button - class: '{classes}', text: '{text}'")
+
+        # Fall back to broader selector (still excluding hide)
+        slot_buttons = page.query_selector_all("button[data-courtlabel]:not([disabled]):not(.hide)")
+        log.info(f"  Using fallback: found {len(slot_buttons)} buttons")
 
     # Group by court
     slots_by_court: dict[str, list[str]] = defaultdict(list)
