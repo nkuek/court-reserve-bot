@@ -33,7 +33,7 @@ _page: Page | None = None
 def _init_playwright():
     """Initialize Playwright with stealth patches."""
     global _stealth_ctx_mgr, _playwright
-    
+
     if _playwright is None:
         stealth = Stealth(
             navigator_platform_override="MacIntel",
@@ -42,18 +42,18 @@ def _init_playwright():
         # Store the context manager so we can exit it later
         _stealth_ctx_mgr = stealth.use_sync(sync_playwright())
         _playwright = _stealth_ctx_mgr.__enter__()
-    
+
     return _playwright
 
 
 def get_browser() -> Browser:
     """Get or create the browser instance."""
     global _browser
-    
+
     if _browser is None:
         p = _init_playwright()
         headless = os.environ.get("HEADLESS", "false").lower() == "true"
-        
+
         _browser = p.chromium.launch(
             headless=headless,
             args=[
@@ -70,7 +70,7 @@ def get_browser() -> Browser:
 def get_context() -> BrowserContext:
     """Get or create the browser context."""
     global _context
-    
+
     if _context is None:
         browser = get_browser()
         _context = browser.new_context(
@@ -83,7 +83,7 @@ def get_context() -> BrowserContext:
 def get_page() -> Page:
     """Get or create the page instance (lazy initialization)."""
     global _page
-    
+
     if _page is None:
         context = get_context()
         _page = context.new_page()
@@ -93,28 +93,28 @@ def get_page() -> Page:
 def close_browser():
     """Close the browser and clean up resources."""
     global _stealth_ctx_mgr, _playwright, _browser, _context, _page
-    
+
     if _page:
         try:
             _page.close()
         except:
             pass
         _page = None
-    
+
     if _context:
         try:
             _context.close()
         except:
             pass
         _context = None
-    
+
     if _browser:
         try:
             _browser.close()
         except:
             pass
         _browser = None
-    
+
     if _stealth_ctx_mgr:
         try:
             _stealth_ctx_mgr.__exit__(None, None, None)
@@ -146,13 +146,3 @@ COURTS = [
     "Pickleball Court #8A (Bubble B)",
     "Pickleball Court #8B (Bubble B)",
 ]
-
-
-# Legacy compatibility - alias for migration
-def get_driver():
-    """Legacy compatibility function - returns the Playwright page.
-    
-    Note: This is for migration compatibility. New code should use get_page() directly.
-    The returned object is a Playwright Page, not a Selenium WebDriver.
-    """
-    return get_page()
