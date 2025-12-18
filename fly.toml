@@ -9,7 +9,7 @@
 # Logs: fly logs
 # SSH:  fly ssh console
 
-app = "court-reserve-bot"
+app = "courtreserve-bot"
 primary_region = "iad"  # Change to your preferred region
 
 [build]
