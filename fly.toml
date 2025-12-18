@@ -20,7 +20,7 @@ primary_region = "iad"  # Change to your preferred region
 
 # Mount persistent volume for database and screenshots
 [mounts]
-  source = "court_bot_data"
+  source = "courtbot_data"
   destination = "/app/data"
 
 # No HTTP service needed - this is a background worker (Discord bot)
