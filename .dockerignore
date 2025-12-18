@@ -4,20 +4,34 @@
 
 # Python
 __pycache__
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
+*.so
+.Python
 .venv
 venv
-.env
+ENV
 
 # IDE
 .idea
 .vscode
-.cursor
+*.swp
+*.swo
 
-# Logs
-logs/*.log
+# Local data (will use volume mount instead)
+data/
+*.db
 
-# OS
+# Test files
+mobile_test.py
+mobile_screenshot.png
+mobile_booking.png
+
+# Environment (secrets set via fly secrets)
+.env
+.env.local
+
+# Misc
+*.log
 .DS_Store
 Thumbs.db

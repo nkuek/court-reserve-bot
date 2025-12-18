@@ -1,26 +1,32 @@
-# fly.toml - Discord bot configuration
-# See https://fly.io/docs/reference/configuration/
+# fly.toml - Fly.io configuration
+#
+# Setup:
+#   1. fly launch --no-deploy
+#   2. fly volumes create court_bot_data --size 1 --region iad
+#   3. fly secrets set DISCORD_BOT_TOKEN=xxx ENCRYPTION_KEY=xxx
+#   4. fly deploy
+#
+# Logs: fly logs
+# SSH:  fly ssh console
 
-app = 'courtreserve-bot'
-primary_region = 'iad'
+app = "court-reserve-bot"
+primary_region = "iad"  # Change to your preferred region
 
 [build]
 
 [env]
-  HEADLESS = 'true'
-  TZ = 'America/New_York'
+  HEADLESS = "true"
+  PYTHONUNBUFFERED = "1"
 
-# Persistent storage for user credentials
-[[mounts]]
-  source = 'courtbot_data'
-  destination = '/app/data'
+# Mount persistent volume for database and screenshots
+[mounts]
+  source = "court_bot_data"
+  destination = "/app/data"
 
-# Run as a background process (not an HTTP service)
-[processes]
-  bot = 'python bot.py'
+# No HTTP service needed - this is a background worker (Discord bot)
+# Fly will keep it running as long as the process is alive
 
 [[vm]]
-  memory = '2gb'
-  cpu_kind = 'shared'
+  memory = "1gb"
+  cpu_kind = "shared"
   cpus = 1
-  processes = ['bot']
