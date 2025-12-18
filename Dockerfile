@@ -7,6 +7,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
+    tzdata \
     libnss3 \
     libnspr4 \
     libatk1.0-0 \

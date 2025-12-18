@@ -17,6 +17,7 @@ primary_region = "iad"  # Change to your preferred region
 [env]
   HEADLESS = "true"
   PYTHONUNBUFFERED = "1"
+  TZ = "America/New_York"
 
 # Mount persistent volume for database and screenshots
 [mounts]
@@ -27,6 +28,6 @@ primary_region = "iad"  # Change to your preferred region
 # Fly will keep it running as long as the process is alive
 
 [[vm]]
-  memory = "1gb"
+  memory = "2gb"
   cpu_kind = "shared"
   cpus = 1
