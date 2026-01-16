@@ -109,7 +109,8 @@ def select_booking_date(date: str | datetime | None = None):
     page = get_page()
     log.info("Navigating to bookings page...")
     page.goto(f"{BASE_URL}/Online/Reservations/Bookings/{ORG_ID}?sId={SCHEDULE_ID}")
-    page.wait_for_load_state("networkidle")
+    # Use domcontentloaded instead of networkidle (faster, we wait for elements anyway)
+    page.wait_for_load_state("domcontentloaded")
 
     # Create friendly label
     if days_ahead == 0:
@@ -135,7 +136,8 @@ def select_booking_date(date: str | datetime | None = None):
             f"  Original error: {e}"
         )
 
-    page.wait_for_timeout(1000)  # Wait for date picker to open
+    # Wait for date picker calendar to be visible (faster than fixed 1s wait)
+    page.wait_for_selector(".k-calendar", timeout=5000)
 
     # Format: YYYY/M/D (month is 0-indexed in JS, but not in Python)
     # The original JS uses: futureDate.getMonth() which is 0-indexed

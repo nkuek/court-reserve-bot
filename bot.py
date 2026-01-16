@@ -423,12 +423,13 @@ async def help_command(interaction: discord.Interaction):
     )
 
     embed.add_field(
-        name="⏰ One-time Scheduling",
+        name="⏰ Timing",
         value=(
-            "Use `wait_until` parameter:\n"
+            "`/book` waits until 1 min before\n"
+            "reservation time by default.\n"
+            "Override with `wait_until`:\n"
             "`07:00` — Today at 7 AM\n"
-            "`tomorrow 07:00`\n"
-            "`+1d 07:00`"
+            "`tomorrow 07:00`"
         ),
         inline=True,
     )
@@ -542,95 +543,6 @@ async def account(interaction: discord.Interaction):
         )
 
 
-@tree.command(name="book", description="Book a pickleball court")
-@app_commands.describe(
-    time="Reservation time in 24h format (e.g., 21:00 for 9 PM)",
-    duration="Duration in hours (1, 1.5, 2, 2.5, or 3)",
-    date="Date to book (today, tomorrow, +3d, 12/15, or latest)",
-    court="Specific court to book (or 'any' for auto-select)",
-    wait_until="Wait until this time before starting (e.g., 07:00)",
-)
-@app_commands.choices(duration=[
-    app_commands.Choice(name="1 hour", value=1.0),
-    app_commands.Choice(name="1.5 hours", value=1.5),
-    app_commands.Choice(name="2 hours", value=2.0),
-    app_commands.Choice(name="2.5 hours", value=2.5),
-    app_commands.Choice(name="3 hours", value=3.0),
-])
-@app_commands.autocomplete(time=time_autocomplete, date=date_autocomplete, court=court_autocomplete)
-async def book(
-    interaction: discord.Interaction,
-    time: str,
-    duration: float,
-    date: str = "latest",
-    court: str = "any",
-    wait_until: str | None = None,
-):
-    """Book a pickleball court."""
-    # Check for user credentials
-    credentials = get_user_credentials(interaction.user.id)
-    if not credentials:
-        await interaction.response.send_message(
-            "❌ You haven't registered your credentials yet.\n"
-            "Use `/register` to save your CourtReserve login first.",
-            ephemeral=True
-        )
-        return
-
-    email, password = credentials
-
-    # Validate time format
-    if not _validate_time(time):
-        await interaction.response.send_message(
-            "❌ Invalid time format. Use HH:MM (e.g., 21:00 for 9 PM)",
-            ephemeral=True
-        )
-        return
-
-    # Build command
-    cmd = [
-        get_python_path(),
-        str(get_script_dir() / "court_booking.py"),
-        "--time", time,
-        "--duration", str(duration),
-        "--date", date,
-        "--email", email,
-        "--password", password,
-    ]
-
-    # Add court if specified (not "any")
-    if court and court.lower() != "any":
-        cmd.extend(["--court", court])
-
-    if wait_until:
-        cmd.extend(["--wait-until", wait_until])
-
-    # Format court for display
-    court_display = "Any" if court.lower() == "any" else court.replace("Pickleball Court ", "").replace(" (Bubble B)", "")
-
-    # Send initial response
-    embed = discord.Embed(
-        title="🎾 Court Booking Started",
-        color=discord.Color.blue(),
-        timestamp=datetime.now()
-    )
-    embed.add_field(name="Date", value=date, inline=True)
-    embed.add_field(name="Time", value=time, inline=True)
-    embed.add_field(name="Duration", value=f"{duration}h", inline=True)
-    embed.add_field(name="Court", value=court_display, inline=True)
-
-    if wait_until:
-        embed.add_field(name="Wait Until", value=wait_until, inline=True)
-
-    embed.set_footer(text="Running in background... Results will be sent via DM.")
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # Run the booking script in background
-    task_desc = f"Court Booking: {date} @ {time} (Court: {court_display})"
-    asyncio.create_task(_run_script(interaction, cmd, "Court Booking", task_desc))
-
-
 @tree.command(name="openplay", description="Register for an open play event")
 @app_commands.describe(
     date="Date to register (Tuesdays and Thursdays only)",
@@ -722,6 +634,7 @@ class BookSlotView(discord.ui.View):
         super().__init__(timeout=300)  # 5 minute timeout
         self.date = date
         self.user_id = user_id
+        self.slots_data = slots_data  # Store for duration validation
         self.selected_court: str | None = None
         self.selected_time: str | None = None
         self.selected_duration: float = 2.0  # Default
@@ -869,6 +782,70 @@ class BookSlotView(discord.ui.View):
         except:
             return 0
 
+    def _get_required_slots(self, start_time: str, duration_hours: float) -> list[str]:
+        """Get all time slots required for a booking with given start time and duration.
+
+        For a 2-hour booking starting at 9:00 PM, returns:
+        ['9:00 PM', '9:30 PM', '10:00 PM', '10:30 PM']
+        """
+        from datetime import datetime, timedelta
+
+        # Parse the start time
+        start_time = start_time.strip().upper()
+        time_part = start_time.replace("AM", "").replace("PM", "").strip()
+        hour, minute = map(int, time_part.split(":"))
+
+        if "PM" in start_time and hour != 12:
+            hour += 12
+        elif "AM" in start_time and hour == 12:
+            hour = 0
+
+        # Generate all 30-minute slots needed
+        slots = []
+        num_slots = int(duration_hours * 2)  # 2 slots per hour
+
+        for i in range(num_slots):
+            slot_hour = hour + (minute + i * 30) // 60
+            slot_minute = (minute + i * 30) % 60
+
+            # Convert back to 12-hour format
+            if slot_hour == 0:
+                formatted = f"12:{slot_minute:02d} AM"
+            elif slot_hour < 12:
+                formatted = f"{slot_hour}:{slot_minute:02d} AM"
+            elif slot_hour == 12:
+                formatted = f"12:{slot_minute:02d} PM"
+            else:
+                formatted = f"{slot_hour - 12}:{slot_minute:02d} PM"
+
+            slots.append(formatted)
+
+        return slots
+
+    def _check_duration_available(self, court: str, start_time: str, duration_hours: float) -> tuple[bool, list[str]]:
+        """Check if all time slots for the requested duration are available.
+
+        Returns (is_available, missing_slots).
+        """
+        required_slots = self._get_required_slots(start_time, duration_hours)
+        court_slots = set(self.slots_data.get(court, []))
+
+        missing = [slot for slot in required_slots if slot not in court_slots]
+
+        return len(missing) == 0, missing
+
+    def _get_valid_durations(self, court: str, start_time: str) -> list[float]:
+        """Get list of valid durations for a court/time combination."""
+        all_durations = [1.0, 1.5, 2.0, 2.5, 3.0]
+        valid = []
+
+        for duration in all_durations:
+            is_available, _ = self._check_duration_available(court, start_time, duration)
+            if is_available:
+                valid.append(duration)
+
+        return valid
+
     async def range_callback(self, interaction: discord.Interaction):
         """Handle time range selection - update slot dropdown."""
         range_key = self.range_select.values[0]
@@ -912,10 +889,6 @@ class BookSlotView(discord.ui.View):
         self.slot_select.placeholder = f"1️⃣ Select time{truncated_msg}..."
 
         await interaction.response.edit_message(view=self)
-        await interaction.followup.send(
-            f"✅ Filtered to **{filter_label}** — {len(time_to_courts)} times available{truncated_msg}",
-            ephemeral=True,
-        )
 
     async def slot_callback(self, interaction: discord.Interaction):
         """Handle slot selection."""
@@ -923,49 +896,92 @@ class BookSlotView(discord.ui.View):
             await interaction.response.defer()
             return
 
-        value = self.slot_select.values[0]
-        _, self.selected_time = self.slot_map[value]
+        selected_value = self.slot_select.values[0]
+        _, self.selected_time = self.slot_map[selected_value]
 
         # Check if multiple courts are available at this time
         courts = self.time_courts_map.get(self.selected_time, [])
 
-        if len(courts) == 1:
-            # Only one court - auto-select it
-            self.selected_court = courts[0][0]
-            short_name = courts[0][1]
-            await interaction.response.send_message(
-                f"✅ Selected **{self.selected_time}** on **Court {short_name}**. "
-                f"Duration: **{self.selected_duration}h**. Click **Book Now** to confirm!",
-                ephemeral=True,
-            )
-        else:
-            # Multiple courts - let user pick (default to first)
-            self.selected_court = courts[0][0]
-            court_list = ", ".join([short for _, short in courts])
+        # Auto-select first court
+        self.selected_court = courts[0][0]
+        short_name = courts[0][1]
 
-            # Create a simple message with court options
-            await interaction.response.send_message(
-                f"✅ Selected **{self.selected_time}**\n"
-                f"📍 Available courts: **{court_list}**\n"
-                f"➡️ Will book **Court {courts[0][1]}** (first available). "
-                f"Duration: **{self.selected_duration}h**.\n\n"
-                f"Click **Book Now** to confirm!",
-                ephemeral=True,
+        # Get valid durations for this court/time
+        valid_durations = self._get_valid_durations(self.selected_court, self.selected_time)
+
+        if not valid_durations:
+            # Shouldn't happen, but handle gracefully
+            valid_durations = [1.0]
+
+        # Update duration dropdown with only valid options
+        duration_labels = {
+            1.0: "1 hour",
+            1.5: "1.5 hours",
+            2.0: "2 hours",
+            2.5: "2.5 hours",
+            3.0: "3 hours",
+        }
+
+        # Set default to 2h if available, otherwise longest available
+        if 2.0 in valid_durations:
+            self.selected_duration = 2.0
+        else:
+            self.selected_duration = max(valid_durations)
+
+        self.duration_select.options = [
+            discord.SelectOption(
+                label=duration_labels[d],
+                value=str(d),
+                default=(d == self.selected_duration),
             )
+            for d in valid_durations
+        ]
+
+        # Update slot select to show the selected time as default
+        new_slot_options = []
+        for option in self.slot_select.options:
+            new_slot_options.append(
+                discord.SelectOption(
+                    label=option.label,
+                    value=option.value,
+                    description=option.description,
+                    default=(option.value == selected_value),
+                )
+            )
+        self.slot_select.options = new_slot_options
+
+        await interaction.response.edit_message(view=self)
 
     async def duration_callback(self, interaction: discord.Interaction):
         """Handle duration selection."""
         self.selected_duration = float(self.duration_select.values[0])
-        await interaction.response.send_message(
-            f"✅ Duration set to **{self.selected_duration} hours**.",
-            ephemeral=True,
-        )
+        await interaction.response.defer()
 
     async def book_callback(self, interaction: discord.Interaction):
         """Book the selected slot."""
         if not self.selected_court or not self.selected_time:
             await interaction.response.send_message(
                 "❌ Please select a time slot first!",
+                ephemeral=True,
+            )
+            return
+
+        # Verify duration is available before proceeding
+        is_available, missing_slots = self._check_duration_available(
+            self.selected_court, self.selected_time, self.selected_duration
+        )
+
+        if not is_available:
+            short_name = self.selected_court.replace("Pickleball Court ", "").replace(" (Bubble B)", "").replace("#", "")
+            missing_str = ", ".join(missing_slots[:3])
+            if len(missing_slots) > 3:
+                missing_str += f" (+{len(missing_slots) - 3} more)"
+
+            await interaction.response.send_message(
+                f"❌ **Cannot book {self.selected_duration}h starting at {self.selected_time}**\n\n"
+                f"Court **{short_name}** is not available for the full duration.\n"
+                f"Missing slots: {missing_str}\n\n"
+                f"💡 Try a shorter duration or different time.",
                 ephemeral=True,
             )
             return
@@ -984,12 +1000,15 @@ class BookSlotView(discord.ui.View):
         time_24h = convert_to_24h(self.selected_time)
 
         # Build booking command
+        # Uses default behavior: wait until 1 minute before reservation time
         cmd = [
             get_python_path(),
             str(get_script_dir() / "court_booking.py"),
             "--time", time_24h,
             "--duration", str(self.selected_duration),
             "--date", self.date,
+            "--parallel",
+            "--attempts", "3",
             "--court", self.selected_court,
             "--email", email,
             "--password", password,
@@ -1238,16 +1257,108 @@ async def cancel(interaction: discord.Interaction):
         )
 
 
+@tree.command(name="book", description="Book a pickleball court")
+@app_commands.describe(
+    time="Reservation time in 24h format (e.g., 21:00 for 9 PM)",
+    duration="Duration in hours (1, 1.5, 2, 2.5, or 3)",
+    date="Date to book (today, tomorrow, +3d, 12/15, or latest)",
+    court="Specific court to book (or 'any' for auto-select)",
+    wait_until="Wait until this time before starting (e.g., 07:00)",
+)
+@app_commands.choices(duration=[
+    app_commands.Choice(name="1 hour", value=1.0),
+    app_commands.Choice(name="1.5 hours", value=1.5),
+    app_commands.Choice(name="2 hours", value=2.0),
+    app_commands.Choice(name="2.5 hours", value=2.5),
+    app_commands.Choice(name="3 hours", value=3.0),
+])
+@app_commands.autocomplete(time=time_autocomplete, date=date_autocomplete, court=court_autocomplete)
+async def book(
+    interaction: discord.Interaction,
+    time: str,
+    duration: float,
+    date: str = "latest",
+    court: str = "any",
+    wait_until: str | None = None,
+):
+    """Book a pickleball court."""
+    # Check for user credentials
+    credentials = get_user_credentials(interaction.user.id)
+    if not credentials:
+        await interaction.response.send_message(
+            "❌ You haven't registered your credentials yet.\n"
+            "Use `/register` to save your CourtReserve login first.",
+            ephemeral=True
+        )
+        return
+
+    email, password = credentials
+
+    # Validate time format
+    if not _validate_time(time):
+        await interaction.response.send_message(
+            "❌ Invalid time format. Use HH:MM (e.g., 21:00 for 9 PM)",
+            ephemeral=True
+        )
+        return
+
+    # Build command
+    cmd = [
+        get_python_path(),
+        str(get_script_dir() / "court_booking.py"),
+        "--time", time,
+        "--duration", str(duration),
+        "--date", date,
+        "--parallel",
+        "--attempts", "3",
+        "--email", email,
+        "--password", password,
+    ]
+
+    # Add court if specified (not "any")
+    if court and court.lower() != "any":
+        cmd.extend(["--court", court])
+
+    if wait_until:
+        cmd.extend(["--wait-until", wait_until])
+    # Otherwise, use default behavior: wait until 1 minute before reservation time
+
+    # Format court for display
+    court_display = "Any" if court.lower() == "any" else court.replace("Pickleball Court ", "").replace(" (Bubble B)", "")
+
+    # Send initial response
+    embed = discord.Embed(
+        title="🎾 Court Booking Started",
+        color=discord.Color.blue(),
+        timestamp=datetime.now()
+    )
+    embed.add_field(name="Date", value=date, inline=True)
+    embed.add_field(name="Time", value=time, inline=True)
+    embed.add_field(name="Duration", value=f"{duration}h", inline=True)
+    embed.add_field(name="Court", value=court_display, inline=True)
+
+    if wait_until:
+        embed.add_field(name="Wait Until", value=wait_until, inline=True)
+
+    embed.set_footer(text="Running in background... Results will be sent via DM.")
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # Run the booking script in background
+    task_desc = f"Court Booking: {date} @ {time} (Court: {court_display})"
+    asyncio.create_task(_run_script(interaction, cmd, "Court Booking", task_desc))
+
+
 @tree.command(name="check-availability", description="Check available court slots for a date")
 @app_commands.describe(
     date="Date to check (today, tomorrow, +3d, 12/15, or latest)",
 )
 @app_commands.autocomplete(date=date_autocomplete)
-async def slots(
+async def check_availability(
     interaction: discord.Interaction,
     date: str = "latest",
 ):
-    """Check available court slots."""
+    """Check available court slots and book directly from the results."""
     # Check for user credentials
     credentials = get_user_credentials(interaction.user.id)
     if not credentials:
@@ -2404,8 +2515,11 @@ async def run_scheduled_task(sched: dict):
             "--time", booking_time,
             "--duration", str(duration),
             "--date", "latest",  # Always book the latest available date
+            "--parallel",
+            "--attempts", "3",
             "--email", email,
             "--password", password,
+            "--no-wait",  # Execute immediately - scheduler already handles timing
         ]
 
         # Add court if specified
@@ -2613,9 +2727,10 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
     task_id = str(uuid.uuid4())[:8]  # Short unique ID
 
     try:
-        # Build environment with headless mode enabled
+        # Build environment with headless mode enabled and tracing on
         env = os.environ.copy()
         env["HEADLESS"] = "true"
+        env["ENABLE_TRACING"] = "true"
 
         # Start the process
         process = await asyncio.create_subprocess_exec(

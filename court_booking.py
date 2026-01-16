@@ -4,9 +4,11 @@ Court booking script for CourtReserve.
 
 Usage:
     python court_booking.py --time 21:00 --duration 2
+    python court_booking.py --time 21:00 --duration 2 --parallel  # Try all courts simultaneously
 """
 
 import logging
+import multiprocessing
 import os
 import re
 import sys
@@ -81,10 +83,8 @@ def to_12_hour(time_str: str | datetime) -> str:
 
 
 def duration_to_index(hours: float) -> int:
-    """Convert duration hours to dropdown index."""
-    # 1 hour is selected by default, so subtract 1
-    index = VALID_DURATIONS.index(hours) - 1
-    return index if index >= 0 else -1
+    """Convert duration hours to dropdown index (0-indexed)."""
+    return VALID_DURATIONS.index(hours)
 
 
 def add_players():
@@ -97,13 +97,16 @@ def add_players():
         additional_players_input.wait_for(timeout=10000)
         additional_players_input.fill("Placeholder")
 
-        # Wait for results to appear
-        page.locator("#OwnersDropdown_listbox li").first.wait_for(timeout=5000)
-        page.wait_for_timeout(1000)
+        # Wait for dropdown results to appear (much faster than fixed 5s wait)
+        page.locator("#OwnersDropdown_listbox li").first.wait_for(timeout=10000)
+        # Small delay for the UI to be ready for input
+        page.wait_for_timeout(300)
 
-        # Select first option via keyboard
-        additional_players_input.press("ArrowDown")
         additional_players_input.press("Enter")
+
+        # Wait for the player to be added (tag appears in the form)
+        # This replaces the old 5-second wait with a condition-based wait
+        page.wait_for_timeout(200)  # Brief delay for form state update
         log.info(f"  Added placeholder {i + 1}/3")
 
     log.info("Successfully added all placeholders")
@@ -114,35 +117,85 @@ def click_disclosure():
     log.info("Clicking disclosure checkbox...")
     page = get_page()
     disclosure_label = page.locator("label[for='DisclosureAgree']")
-    disclosure_label.wait_for(timeout=10000)
+    disclosure_label.wait_for(timeout=3000)
     disclosure_label.click()
     log.info("Disclosure accepted")
-    page.wait_for_timeout(1000)
 
 
 def add_duration(duration_hours: float):
-    """Set the reservation duration."""
+    """Set the reservation duration (optimized for speed)."""
     log.info(f"Setting duration to {duration_hours} hours...")
     page = get_page()
 
     duration_input = page.locator("span[aria-owns='Duration_listbox']")
-    duration_input.wait_for(timeout=10000)
+    duration_input.wait_for(timeout=3000)
     duration_input.click()
 
-    # Wait for dropdown to open
-    page.locator('ul[data-testid="Duration-container"][aria-hidden="false"]').wait_for(timeout=5000)
+    # Wait for dropdown to open - shorter timeout
+    dropdown_list = page.locator('ul[data-testid="Duration-container"][aria-hidden="false"]')
+    dropdown_list.wait_for(timeout=2000)
 
+    # Click directly on the duration item instead of using slow arrow key navigation
     duration_index = duration_to_index(duration_hours)
+    duration_item = dropdown_list.locator("li").nth(duration_index)
+    duration_item.click()
 
-    for _ in range(duration_index + 1):
-        duration_input.press("ArrowDown")
-
-    duration_input.press("Enter")
     log.info(f"Duration set to {duration_hours} hours")
 
 
-def click_save_button(target_time: datetime):
-    """Wait until target time and click the save button with high precision."""
+def _save_debug_snapshot(suffix: str):
+    """Save screenshot and HTML for debugging (only in headless mode or if DEBUG_SNAPSHOTS is set)."""
+    # Skip if tracing is enabled - traces already capture screenshots and DOM
+    if os.environ.get("ENABLE_TRACING", "false").lower() == "true":
+        return None, None
+
+    if not (os.environ.get("HEADLESS", "false").lower() == "true" or os.environ.get("DEBUG_SNAPSHOTS")):
+        return None, None
+
+    page = get_page()
+    debug_dir = Path(__file__).parent / "data" / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Save screenshot
+    screenshot_path = debug_dir / f"{timestamp}_{suffix}.png"
+    try:
+        page.screenshot(path=screenshot_path)
+        log.info(f"  Screenshot saved: {screenshot_path}")
+    except Exception as e:
+        log.warning(f"  Failed to save screenshot: {e}")
+        screenshot_path = None
+
+    # Save HTML
+    html_path = debug_dir / f"{timestamp}_{suffix}.html"
+    try:
+        html_content = page.content()
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+        log.info(f"  HTML saved: {html_path}")
+    except Exception as e:
+        log.warning(f"  Failed to save HTML: {e}")
+        html_path = None
+
+    # Clean up old debug files (keep last 20 of each type)
+    for ext in ["*.png", "*.html"]:
+        files = sorted(debug_dir.glob(ext), key=os.path.getmtime)
+        for old_file in files[:-20]:
+            try:
+                os.remove(old_file)
+            except Exception:
+                pass
+
+    return screenshot_path, html_path
+
+
+def click_save_button(target_time: datetime) -> bool:
+    """Wait until target time and click the save button with high precision.
+
+    Returns:
+        True if the booking appears successful (modal closed), False otherwise.
+    """
     page = get_page()
     log.info("Preparing to click Save button...")
     save_button = page.locator('button[data-testid="Save"]')
@@ -158,22 +211,29 @@ def click_save_button(target_time: datetime):
         seconds = int(delay % 60)
         log.info(f"Waiting {hours}h {minutes}m {seconds}s until target time ({target_time.strftime('%H:%M:%S')})")
 
+        # Calculate the actual click time (2 seconds before target to beat server queue)
+        early_click_time = target_time - timedelta(seconds=2)
+
         # Log countdown every 30 seconds (or every second if < 30s remaining)
         last_log_time = None
         while True:
-            remaining = (target_time - datetime.now()).total_seconds()
-            if remaining <= 0.1:
+            now = datetime.now()
+            remaining = (early_click_time - now).total_seconds()
+
+            # Break when we're within 50ms of click time (switch to busy-wait)
+            if remaining <= 0.05:
                 break
 
-            hours = int(remaining // 3600)
-            minutes = int((remaining % 3600) // 60)
-            seconds = int(remaining % 60)
+            remaining_to_target = (target_time - now).total_seconds()
+            hours = int(remaining_to_target // 3600)
+            minutes = int((remaining_to_target % 3600) // 60)
+            seconds = int(remaining_to_target % 60)
 
             # Log every 30 seconds, or every second in final 10 seconds
-            current_remaining_int = int(remaining)
+            current_remaining_int = int(remaining_to_target)
             should_log = (
                 last_log_time is None or
-                remaining <= 10 or
+                remaining_to_target <= 10 or
                 current_remaining_int % 30 == 0 and current_remaining_int != last_log_time
             )
 
@@ -182,21 +242,94 @@ def click_save_button(target_time: datetime):
                 last_log_time = current_remaining_int
 
             # Sleep for ~1 second, but check more frequently near the end
-            sleep_time = min(1.0, remaining - 0.1)
+            sleep_time = min(1.0, remaining - 0.05)
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
-        # Busy-wait (spin loop) for precise timing in the final milliseconds
-        while datetime.now() < target_time:
+        # Final busy-wait (spin loop) for precise timing
+        while datetime.now() < early_click_time:
             pass
 
     # Use JavaScript click for faster execution
     save_button.evaluate("el => el.click()")
 
     click_time = datetime.now()
-    diff_ms = (click_time - target_time).total_seconds() * 1000
-    log.info(f"CLICKED Save button at {click_time.strftime('%H:%M:%S.%f')[:-3]} (diff: {diff_ms:+.1f}ms)")
-    page.wait_for_timeout(1000)
+    diff_from_target_ms = (click_time - target_time).total_seconds() * 1000
+    log.info(f"CLICKED Save button at {click_time.strftime('%H:%M:%S.%f')[:-3]} ({diff_from_target_ms:+.1f}ms from target, intended -2000ms)")
+
+    # Wait for the booking result - either modal closes (success) or error alert appears
+    log.info("Waiting for booking result...")
+    error_alert = page.locator('.swal2-modal')
+    # Check for the booking form title - if it's gone, modal closed (success)
+    booking_form_title = page.locator('span[data-testid="title"]:has-text("Book a reservation")')
+    # Also use data-testid for the save button since text changes during loading
+    save_btn = page.locator('button[data-testid="Save"], button[data-testid="save-btn"]')
+
+    # Poll for up to 30 seconds for a definitive result (reduced from 60s)
+    max_wait_seconds = 30
+    poll_interval_ms = 150  # Faster polling for quicker detection
+    wait_start = time.time()
+
+    while time.time() - wait_start < max_wait_seconds:
+        # Check if error alert appeared
+        if error_alert.count() > 0:
+            log.warning("Error alert detected - booking failed")
+            _save_debug_snapshot("after_save")
+            return False
+
+        # Check if booking form title is gone (modal closed = success)
+        try:
+            if booking_form_title.count() == 0 or not booking_form_title.is_visible():
+                log.info("Booking modal closed - booking appears successful")
+                _save_debug_snapshot("after_save")
+                return True
+        except Exception:
+            # Element detached = modal closed
+            log.info("Booking modal closed - booking appears successful")
+            _save_debug_snapshot("after_save")
+            return True
+
+        # Check if save button is no longer disabled (form submitted successfully)
+        try:
+            button_visible = save_btn.count() > 0 and save_btn.is_visible()
+            button_disabled = button_visible and save_btn.is_disabled()
+
+            if button_visible and not button_disabled:
+                # Button is enabled again - submission completed, check result
+                page.wait_for_timeout(100)
+                if error_alert.count() > 0:
+                    log.warning("Error alert appeared after submission")
+                    _save_debug_snapshot("after_save")
+                    return False
+                # Check if modal closed
+                if booking_form_title.count() == 0 or not booking_form_title.is_visible():
+                    log.info("Save button reset and modal closed - booking successful")
+                    _save_debug_snapshot("after_save")
+                    return True
+        except Exception:
+            # Button might be detached if modal closed
+            pass
+
+        page.wait_for_timeout(poll_interval_ms)
+
+    # Timeout - couldn't determine result
+    log.warning(f"Timeout after {max_wait_seconds}s waiting for booking result")
+    _save_debug_snapshot("after_save")
+
+    # Final check
+    if error_alert.count() > 0:
+        return False
+
+    # If modal closed during our final check, consider it success
+    try:
+        if booking_form_title.count() == 0 or not booking_form_title.is_visible():
+            return True
+    except Exception:
+        return True
+
+    # Still on booking form after timeout = likely failed
+    log.warning("Still on booking form after timeout - assuming failure")
+    return False
 
 
 def check_court_availability(court: str, reservation_time: str, end_time: str):
@@ -204,9 +337,11 @@ def check_court_availability(court: str, reservation_time: str, end_time: str):
     log.info(f"Checking court: {court} for {reservation_time}")
     page = get_page()
 
+    # Use exact text match with 'Reserve X:XX PM' to avoid partial matches
+    # e.g., '2:00 PM' would otherwise match '12:00 PM'
     try:
         start_time_btn = page.locator(
-            f"button[data-courtlabel='{court}']:has-text('{reservation_time}')"
+            f"button[data-courtlabel='{court}']:text('Reserve {reservation_time}')"
         )
         start_time_btn.wait_for(timeout=5000)
         log.info(f"  Found start time {reservation_time}")
@@ -219,7 +354,7 @@ def check_court_availability(court: str, reservation_time: str, end_time: str):
     try:
         # Verify the time slot is available by checking the end time
         end_time_btn = page.locator(
-            f"button[data-courtlabel='{court}']:has-text('{end_time}')"
+            f"button[data-courtlabel='{court}']:text('Reserve {end_time}')"
         )
         end_time_btn.wait_for(timeout=5000)
         log.info(f"  Found end time {end_time} - slot available!")
@@ -276,6 +411,232 @@ def get_available_courts(reservation_time: str, end_time: str, courts: list[str]
     return available
 
 
+def _parallel_book_court(
+    court_name: str,
+    booking_date: datetime,
+    reservation_time: str,
+    end_time: str,
+    duration: float,
+    target_time: datetime,
+    result_queue: multiprocessing.Queue,
+    click_offset_ms: int = 0,
+    worker_id: str = "",
+):
+    """
+    Worker function for parallel court booking.
+    Runs in its own process with its own browser instance.
+
+    Args:
+        click_offset_ms: Offset from target_time to click (negative = before target)
+        worker_id: Identifier for this worker (for logging)
+    """
+    # Calculate actual click time with offset
+    actual_click_time = target_time + timedelta(milliseconds=click_offset_ms)
+
+    # Re-configure logging for this process with flush to ensure output is visible
+    label = worker_id or court_name[-2:]
+
+    # Create handler that flushes immediately
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter(f'%(asctime)s [{label}] %(message)s', datefmt='%H:%M:%S'))
+
+    logging.basicConfig(
+        level=logging.INFO,
+        handlers=[handler],
+        force=True
+    )
+    worker_log = logging.getLogger(__name__)
+
+    # Force unbuffered output for this process
+    sys.stdout.reconfigure(line_buffering=True)
+
+    try:
+        worker_log.info(f"Starting worker for {court_name} (click offset: {click_offset_ms:+d}ms)")
+
+        # Each process needs its own browser
+        login()
+        select_booking_date(booking_date)
+
+        # Open the booking form for this court
+        try:
+            check_court_availability(court_name, reservation_time, end_time)
+        except Exception as err:
+            worker_log.error(f"Court not available: {err}")
+            result_queue.put({"court": court_name, "worker_id": worker_id, "success": False, "error": str(err)})
+            return
+
+        # Fill the form
+        add_players()
+        click_disclosure()
+        add_duration(duration)
+
+        worker_log.info(f"Form filled, will click at {actual_click_time.strftime('%H:%M:%S.%f')[:-3]}")
+
+        # Wait and click Save (using custom click time, not the default -2s early)
+        booking_succeeded = _click_save_at_time(actual_click_time)
+
+        if booking_succeeded:
+            worker_log.info("SUCCESS!")
+            result_queue.put({"court": court_name, "worker_id": worker_id, "success": True})
+        else:
+            worker_log.warning("Booking failed")
+            result_queue.put({"court": court_name, "worker_id": worker_id, "success": False, "error": "Booking failed"})
+
+    except Exception as e:
+        worker_log.error(f"Worker error: {e}")
+        result_queue.put({"court": court_name, "worker_id": worker_id, "success": False, "error": str(e)})
+    finally:
+        try:
+            close_browser()
+        except:
+            pass
+
+
+def _click_save_at_time(click_time: datetime) -> bool:
+    """Click the save button at a specific time (for staggered parallel attempts)."""
+    page = get_page()
+    save_button = page.locator('button[data-testid="Save"]')
+    save_button.wait_for(timeout=10000)
+
+    # Wait until click time
+    now = datetime.now()
+    if click_time > now:
+        # Sleep until close to click time
+        sleep_duration = (click_time - now).total_seconds() - 0.05
+        if sleep_duration > 0:
+            time.sleep(sleep_duration)
+        # Busy-wait for final precision
+        while datetime.now() < click_time:
+            pass
+
+    # Click
+    save_button.evaluate("el => el.click()")
+    actual_click = datetime.now()
+    diff_ms = (actual_click - click_time).total_seconds() * 1000
+    log = logging.getLogger(__name__)
+    log.info(f"CLICKED at {actual_click.strftime('%H:%M:%S.%f')[:-3]} (diff: {diff_ms:+.1f}ms)")
+
+    # Wait for result (same logic as click_save_button)
+    error_alert = page.locator('.swal2-modal')
+    booking_form_title = page.locator('span[data-testid="title"]:has-text("Book a reservation")')
+
+    max_wait_seconds = 30
+    poll_interval_ms = 150  # Faster polling
+    start_time = time.time()
+
+    while time.time() - start_time < max_wait_seconds:
+        if error_alert.count() > 0:
+            return False
+        try:
+            if booking_form_title.count() == 0 or not booking_form_title.is_visible():
+                return True
+        except:
+            pass
+        page.wait_for_timeout(poll_interval_ms)
+
+    return False
+
+
+def _run_parallel_booking(
+    courts: list[str],
+    booking_date: datetime,
+    reservation_time: str,
+    end_time: str,
+    duration: float,
+    target_time: datetime,
+    booking_date_str: str,
+    attempts_per_court: int = 1,
+) -> bool:
+    """
+    Run parallel booking attempts for multiple courts.
+
+    Args:
+        courts: List of court names to try
+        attempts_per_court: Number of parallel attempts per court with staggered timing
+                           e.g., 4 attempts = clicks at -2s, -1.5s, -1s, -0.5s
+
+    Returns True if any court was successfully booked.
+    """
+    total_processes = len(courts) * attempts_per_court
+
+    log.info("=" * 50)
+    log.info(f"PARALLEL BOOKING MODE")
+    log.info(f"  Courts: {len(courts)}")
+    log.info(f"  Attempts per court: {attempts_per_court}")
+    log.info(f"  Total processes: {total_processes}")
+    log.info("=" * 50)
+
+    # Calculate staggered click offsets with a tighter window near target time
+    # Spread from -1000ms to 0ms (inclusive), always include an on-time attempt.
+    # e.g., 4 attempts: [-1000, -667, -333, 0] ms
+    if attempts_per_court == 1:
+        offsets_ms = [0]  # Single attempt exactly at target time
+    else:
+        window_ms = 1000
+        step = window_ms // (attempts_per_court - 1)
+        offsets_ms = [ -window_ms + (i * step) for i in range(attempts_per_court - 1) ]
+        offsets_ms.append(0)  # Ensure an on-time attempt
+
+    log.info(f"  Click offsets: {offsets_ms} ms")
+
+    result_queue = multiprocessing.Queue()
+    processes = []
+
+    # Spawn processes for each court × attempt combination
+    for court_name in courts:
+        for attempt_idx, offset_ms in enumerate(offsets_ms):
+            worker_id = f"{court_name[-2:]}-{attempt_idx+1}"
+            p = multiprocessing.Process(
+                target=_parallel_book_court,
+                args=(court_name, booking_date, reservation_time, end_time, duration, target_time, result_queue),
+                kwargs={"click_offset_ms": offset_ms, "worker_id": worker_id},
+            )
+            processes.append((worker_id, p))
+            p.start()
+            log.info(f"Started {worker_id} (offset: {offset_ms:+d}ms)")
+
+    # Wait for all processes to complete (with timeout)
+    timeout = 120  # 2 minutes max
+    for worker_id, p in processes:
+        p.join(timeout=timeout)
+        if p.is_alive():
+            log.warning(f"Process {worker_id} timed out, terminating...")
+            p.terminate()
+            p.join(timeout=5)
+
+    # Collect results
+    results = []
+    while not result_queue.empty():
+        results.append(result_queue.get_nowait())
+
+    # Check for success
+    successes = [r for r in results if r.get("success")]
+    failures = [r for r in results if not r.get("success")]
+
+    log.info("")
+    log.info("=" * 50)
+    log.info("PARALLEL BOOKING RESULTS")
+    log.info("=" * 50)
+
+    for r in successes:
+        worker = r.get('worker_id', '')
+        log.info(f"  ✓ {r['court']} ({worker}): SUCCESS")
+    for r in failures:
+        worker = r.get('worker_id', '')
+        log.info(f"  ✗ {r['court']} ({worker}): {r.get('error', 'Failed')}")
+
+    if successes:
+        # Notify about the first successful booking
+        first_success = successes[0]
+        log.info(f"\nBooked court: {first_success['court']}")
+        notify_success(first_success['court'], booking_date_str, reservation_time, duration)
+        return True
+    else:
+        log.error("\nAll parallel booking attempts failed!")
+        notify_failure(f"Parallel booking failed for {reservation_time} - all {total_processes} attempts failed")
+        return False
+
+
 @app.command()
 def main(
     time_str: Annotated[
@@ -298,9 +659,16 @@ def main(
         str | None,
         typer.Option(
             "--wait-until", "-w",
-            help="Wait until this time before starting. Formats: 07:00, tomorrow 07:00, +1d 07:00, 2025-12-14 07:00",
+            help="Wait until this time before starting. Formats: 07:00, tomorrow 07:00, +1d 07:00, 2025-12-14 07:00. Default: 1 minute before reservation time.",
         ),
     ] = None,
+    no_wait: Annotated[
+        bool,
+        typer.Option(
+            "--no-wait",
+            help="Skip waiting and execute immediately (useful for testing)",
+        ),
+    ] = False,
     date: Annotated[
         str,
         typer.Option(
@@ -315,6 +683,20 @@ def main(
             help="Specific court to book (e.g., 'Pickleball Court 5C (Bubble B)'). If not set, tries all courts.",
         ),
     ] = None,
+    parallel: Annotated[
+        bool,
+        typer.Option(
+            "--parallel", "-p",
+            help="Try all available courts simultaneously using separate browser instances. Much faster but uses more resources.",
+        ),
+    ] = False,
+    attempts: Annotated[
+        int,
+        typer.Option(
+            "--attempts", "-a",
+            help="Number of parallel attempts per court with staggered timing (requires --parallel). e.g., 4 = clicks at -2s, -1.5s, -1s, -0.5s",
+        ),
+    ] = 3,
     email: Annotated[
         str | None,
         typer.Option(
@@ -339,20 +721,27 @@ def main(
     if password:
         os.environ["PASSWORD"] = password
 
-    # Wait until specified time if provided
-    if wait_until_time:
-        try:
-            target = parse_wait_time(wait_until_time)
-        except ValueError as e:
-            raise typer.BadParameter(str(e))
-        wait_until(target)
-
-    # Parse the booking date
+    # Parse the booking date and time first (needed for default wait calculation)
     booking_date = parse_booking_date(date)
     booking_date_str = booking_date.strftime("%a %m/%d")  # e.g., "Sat 12/14"
-
-    # Parse validated time
     hour, minute = map(int, time_str.split(":"))
+
+    # Calculate the target click time (reservation time on today's date for the countdown)
+    target_click_time = datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    # Parse wait time if provided (validate early, but wait later after login)
+    wait_target = None
+    if not no_wait:
+        if wait_until_time:
+            try:
+                wait_target = parse_wait_time(wait_until_time)
+            except ValueError as e:
+                raise typer.BadParameter(str(e))
+        else:
+            # Default: wait until 1 minute before target time
+            default_wait_target = target_click_time - timedelta(minutes=1)
+            if default_wait_target > datetime.now():
+                wait_target = default_wait_target
 
     # Check if reservation would exceed closing time
     closing_time = datetime.now().replace(
@@ -386,8 +775,8 @@ def main(
 
     page = get_page()
 
-    # Compute target time
-    target = datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+    # Use the target click time computed earlier
+    target = target_click_time
     reservation_time = to_12_hour(time_str)
 
     # Compute actual end time for logging
@@ -408,8 +797,21 @@ def main(
 
     notify_start("Court Booking", f"**Date:** {booking_date_str}\n**Time:** {reservation_time}\n**Duration:** {duration} hours")
 
+    # Login first, then wait - so we're ready to go when the time comes
     login()
     select_booking_date(booking_date)
+
+    # Now wait for the target time (after login so we're ready)
+    if no_wait:
+        log.info("--no-wait specified, executing immediately")
+    elif wait_target:
+        if wait_until_time:
+            log.info(f"Waiting until {wait_target.strftime('%H:%M:%S')} before scanning courts...")
+        else:
+            log.info(f"Default behavior: waiting until 1 minute before {target_click_time.strftime('%H:%M:%S')}")
+        wait_until(wait_target)
+    else:
+        log.info("Target time is less than 1 minute away, proceeding immediately")
 
     # Scan for available courts first (only try courts that are actually available)
     if court:
@@ -431,6 +833,40 @@ def main(
         courts_to_try = available_courts
         log.info(f"Will try {len(available_courts)} available court(s)")
 
+    # PARALLEL MODE: Try all courts simultaneously
+    # Activate if --parallel flag set AND (multiple courts OR multiple attempts per court)
+    log.info(f"Parallel mode check: parallel={parallel}, courts={len(courts_to_try)}, attempts={attempts}")
+    if parallel and (len(courts_to_try) > 1 or attempts > 1):
+        # Strategy:
+        # - If multiple courts are available: spread attempts (1 per court)
+        # - If only one court: stack attempts on that court (use --attempts)
+        if len(courts_to_try) > 1:
+            attempts_per_court = 1
+            log.info(f"Multiple courts available ({len(courts_to_try)}). Spreading processes: 1 attempt per court.")
+        else:
+            attempts_per_court = attempts
+            log.info(f"Single court available. Using {attempts_per_court} attempt(s) on the same court.")
+
+        # Close the current browser - parallel processes will create their own
+        close_browser()
+
+        success = _run_parallel_booking(
+            courts=courts_to_try,
+            booking_date=booking_date,
+            reservation_time=reservation_time,
+            end_time=end_time,
+            duration=duration,
+            target_time=target,
+            booking_date_str=booking_date_str,
+            attempts_per_court=attempts_per_court,
+        )
+
+        if success:
+            return
+        else:
+            raise typer.Exit(1)
+
+    # SEQUENTIAL MODE: Try courts one by one
     for court_name in courts_to_try:
         try:
             try:
@@ -443,26 +879,35 @@ def main(
             click_disclosure()
             add_duration(duration)
 
-            click_save_button(target)
+            booking_succeeded = click_save_button(target)
 
-            # Check for SweetAlert (error modal)
+            # Check for SweetAlert (error modal) - may have appeared during wait
             alerts = page.query_selector_all(".swal2-modal")
 
-            if alerts:
+            if alerts or not booking_succeeded:
                 log.warning(
-                    f"Alert detected after saving on court '{court_name}' - "
-                    "assuming conflict, trying next court..."
+                    f"Booking failed on court '{court_name}' - "
+                    "trying next court..."
                 )
 
-                # Click the confirm button on the SweetAlert
-                confirm_button = page.locator("button.swal2-confirm")
-                confirm_button.click()
+                # Save debug snapshot of the error state
+                _save_debug_snapshot(f"error_alert_{court_name.replace(' ', '_')}")
 
-                close_button = page.locator('button[data-testid="Close"]')
-                close_button.click()
+                if alerts:
+                    # Click the confirm button on the SweetAlert
+                    confirm_button = page.locator("button.swal2-confirm")
+                    if confirm_button.count() > 0:
+                        confirm_button.click()
+
+                    close_button = page.locator('button[data-testid="Close"]')
+                    if close_button.count() > 0:
+                        close_button.click()
 
                 # Continue to next court (DO NOT break)
                 continue
+
+            # Save success snapshot
+            _save_debug_snapshot(f"success_{court_name.replace(' ', '_')}")
 
             log.info("=" * 50)
             log.info(f"SUCCESS! Reservation saved on court: {court_name}")
@@ -482,6 +927,9 @@ def main(
         log.error("=" * 50)
         log.error("BOOKING FAILED - No courts available")
         log.error("=" * 50)
+
+        # Save final state for debugging
+        _save_debug_snapshot("booking_failed_all_courts")
 
         if court:
             # User specified a specific court
@@ -517,6 +965,13 @@ def run():
     except Exception as e:
         error_type = type(e).__name__
         log.error(f"Booking failed ({error_type}): {e}")
+
+        # Try to save debug snapshot before closing
+        try:
+            _save_debug_snapshot(f"exception_{error_type}")
+        except Exception:
+            pass
+
         notify_failure(f"Court booking failed.\n{error_type}: {e}")
         close_browser()
         sys.exit(1)

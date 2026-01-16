@@ -57,11 +57,13 @@ def get_available_slots() -> dict[str, list[str]]:
     try:
         page.wait_for_selector(".k-scheduler-content", timeout=15000)
         log.info("  Scheduler content found")
+        # Wait for slot buttons to appear (more reliable than fixed wait)
+        page.wait_for_selector("button.slot-btn[data-courtlabel]", timeout=10000)
+        log.info("  Slot buttons found")
     except Exception as e:
         log.warning(f"  Scheduler load timeout: {e}")
-
-    # Additional wait for dynamic content
-    page.wait_for_timeout(3000)
+        # Fallback to brief wait only if selector fails
+        page.wait_for_timeout(1000)
 
     # Find available slot buttons
     # Available slots have the "slot-btn" class WITHOUT the "hide" class

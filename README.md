@@ -75,26 +75,38 @@ HEADLESS=false
 
 ```bash
 # Book a 2-hour slot at 9 PM, 5 days from now (latest available)
+# By default, waits until 1 minute before 9 PM to execute
 python court_booking.py --time 21:00 --duration 2
 
+# Execute immediately (skip waiting)
+python court_booking.py --time 21:00 --duration 2 --no-wait
+
 # Book for a specific date
-python court_booking.py --time 21:00 --duration 2 --date 12/15
+python court_booking.py --time 21:00 --duration 2 --date 12/15 --no-wait
 
 # Book for tomorrow
-python court_booking.py --time 21:00 --duration 2 --date tomorrow
+python court_booking.py --time 21:00 --duration 2 --date tomorrow --no-wait
 
-# Wait until 7 AM, then book
+# Wait until a specific time (e.g., when booking window opens at 7 AM)
 python court_booking.py --time 21:00 --duration 2 --wait-until 07:00
 ```
+
+> **Note:** Both the CLI and Discord bot default to waiting until 1 minute before the reservation time. This is useful when booking windows open at the exact reservation time. Use `--no-wait` for immediate execution (CLI only).
 
 ### Open Play Registration
 
 ```bash
-# Register for open play
+# Register for open play (clicks immediately)
 python open_play.py
 
 # Register for tomorrow's event
 python open_play.py --date tomorrow
+
+# Wait until 7 AM to click Details (for when registration opens)
+python open_play.py --date tomorrow --click-at 07:00
+
+# Start script early, wait until 7 AM to click
+python open_play.py --date +5d --wait-until 06:55 --click-at 07:00
 ```
 
 ### Check Availability
@@ -131,9 +143,9 @@ Run bookings via Discord commands instead of the command line.
 | `/register`                   | Save your CourtReserve credentials |
 | `/unregister`                 | Delete your saved credentials      |
 | `/account`                    | View your registered email         |
-| `/book time:21:00 duration:2` | Book a court                       |
+| `/check-availability`         | View available slots (with quick-book) |
+| `/book time:21:00 duration:2` | Book a court directly              |
 | `/openplay`                   | Register for open play             |
-| `/check-availability`         | View available slots               |
 | `/cancel`                     | Cancel a running task              |
 | `/schedule list`              | View your scheduled tasks          |
 | `/schedule openplay`          | Schedule recurring open play       |
@@ -189,6 +201,23 @@ fly logs
     └── wait.py               # Wait-until functionality
 ```
 
+## Debugging
+
+When running in headless mode (`HEADLESS=true`), the scripts automatically save debug snapshots (screenshot + HTML) to `data/debug/`. This helps diagnose issues when bookings fail.
+
+To enable debug snapshots in headed mode:
+
+```bash
+DEBUG_SNAPSHOTS=true python court_booking.py --time 21:00 --duration 2 --no-wait
+```
+
+Debug files are saved at key moments:
+- After clicking save button
+- When errors occur
+- On successful bookings
+
+Only the last 20 snapshots are kept to save disk space.
+
 ## Troubleshooting
 
 ### Login fails
@@ -205,3 +234,8 @@ fly logs
 
 - The script tries multiple courts in priority order
 - All courts may already be booked at your requested time
+
+### Booking says success but didn't work
+
+- Check the debug snapshots in `data/debug/`
+- Look for error modals or form validation issues in the HTML

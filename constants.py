@@ -1,5 +1,7 @@
 import os
 from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
 from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext, Playwright
 from playwright_stealth import Stealth
 
@@ -28,6 +30,8 @@ _playwright: Playwright | None = None
 _browser: Browser | None = None
 _context: BrowserContext | None = None
 _page: Page | None = None
+_tracing_active: bool = False
+_trace_path: Path | None = None
 
 
 def _init_playwright():
@@ -77,6 +81,7 @@ def get_context() -> BrowserContext:
             viewport={"width": 1920, "height": 1080},
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
+
     return _context
 
 
@@ -90,9 +95,33 @@ def get_page() -> Page:
     return _page
 
 
+def start_tracing_if_enabled():
+    """Start tracing after login to avoid capturing credentials."""
+    global _tracing_active, _trace_path
+
+    if _tracing_active:
+        return
+
+    if os.environ.get("ENABLE_TRACING", "false").lower() == "true":
+        context = get_context()
+        trace_dir = Path(__file__).parent / "data" / "traces"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        pid = os.getpid()
+        _trace_path = trace_dir / f"trace_{timestamp}_{pid}.zip"
+
+        context.tracing.start(
+            screenshots=True,
+            snapshots=True,
+            sources=True,
+        )
+        _tracing_active = True
+        print(f"[TRACING] Started - will save to {_trace_path}")
+
+
 def close_browser():
     """Close the browser and clean up resources."""
-    global _stealth_ctx_mgr, _playwright, _browser, _context, _page
+    global _stealth_ctx_mgr, _playwright, _browser, _context, _page, _tracing_active, _trace_path
 
     if _page:
         try:
@@ -102,6 +131,17 @@ def close_browser():
         _page = None
 
     if _context:
+        # Stop tracing and save before closing context
+        if _tracing_active and _trace_path:
+            try:
+                _context.tracing.stop(path=str(_trace_path))
+                print(f"[TRACING] Saved to {_trace_path}")
+                print(f"[TRACING] View with: npx playwright show-trace {_trace_path}")
+            except Exception as e:
+                print(f"[TRACING] Failed to save: {e}")
+            _tracing_active = False
+            _trace_path = None
+
         try:
             _context.close()
         except:
