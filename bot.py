@@ -3030,7 +3030,11 @@ class AdminScheduleView(discord.ui.View):
             minute = sched["minute"]
             time_12h = f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
 
-            await interaction.response.send_message(
+            # Update the view to enable buttons
+            await interaction.response.edit_message(view=self)
+
+            # Send details via follow-up so we don't lose the original interaction
+            await interaction.followup.send(
                 f"**Selected Schedule #{sched['id']}**\n"
                 f"User: <@{sched['discord_id']}> (`{sched['discord_id']}`)\n"
                 f"Type: {sched['task_type']}\n"
