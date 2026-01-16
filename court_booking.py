@@ -837,15 +837,16 @@ def main(
     # Activate if --parallel flag set AND (multiple courts OR multiple attempts per court)
     log.info(f"Parallel mode check: parallel={parallel}, courts={len(courts_to_try)}, attempts={attempts}")
     if parallel and (len(courts_to_try) > 1 or attempts > 1):
+        # Ensure at least 2 processes per court
+        attempts_per_court = max(2, attempts)
+
         # Strategy:
-        # - If multiple courts are available: spread attempts (1 per court)
-        # - If only one court: stack attempts on that court (use --attempts)
+        # - If multiple courts are available: spread attempts across all courts with min 2 per court
+        # - If only one court: stack attempts on that court (use --attempts, min 2)
         if len(courts_to_try) > 1:
-            attempts_per_court = 1
-            log.info(f"Multiple courts available ({len(courts_to_try)}). Spreading processes: 1 attempt per court.")
+            log.info(f"Multiple courts available ({len(courts_to_try)}). Spreading processes: {attempts_per_court} attempt(s) per court (min 2).")
         else:
-            attempts_per_court = attempts
-            log.info(f"Single court available. Using {attempts_per_court} attempt(s) on the same court.")
+            log.info(f"Single court available. Using {attempts_per_court} attempt(s) on the same court (min 2).")
 
         # Close the current browser - parallel processes will create their own
         close_browser()
