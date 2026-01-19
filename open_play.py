@@ -465,9 +465,18 @@ def _run_once(
     log.info(f"SUCCESS! Registered for: {event_name}")
     log.info("=" * 50)
 
-    notify_open_play_success(event_name, booking_date_str)
+    # Notify Discord, but don't let notification failures mark the run as failed
+    try:
+        notify_open_play_success(event_name, booking_date_str)
+    except Exception as e:
+        log.warning(f"notify_open_play_success failed: {e}")
+
+    # Close browser without failing the run if teardown has issues
     log.info("Closing browser...")
-    close_browser()
+    try:
+        close_browser()
+    except Exception as e:
+        log.warning(f"close_browser failed: {e}")
 
 
 def _parallel_worker(
