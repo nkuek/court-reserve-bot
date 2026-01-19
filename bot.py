@@ -188,6 +188,33 @@ async def date_autocomplete(
         if current_lower in v.lower() or current_lower in d.lower()
     ]
 
+
+async def once_when_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for one-time schedule dates: today + next 4 days."""
+    choices: list[app_commands.Choice[str]] = []
+    dates = _next_n_dates(5)
+
+    # Special today/tomorrow labels
+    today = dates[0]
+    tomorrow = dates[1]
+
+    def add_choice(value: str, label: str):
+        if not current or current.lower() in value.lower() or current.lower() in label.lower():
+            choices.append(app_commands.Choice(name=label[:100], value=value))
+
+    add_choice("today", f"Today ({today.strftime('%a %m/%d')})")
+    add_choice("tomorrow", f"Tomorrow ({tomorrow.strftime('%a %m/%d')})")
+
+    for d in dates:
+        iso = d.strftime("%Y-%m-%d")
+        label = d.strftime("%a %m/%d")
+        add_choice(iso, label)
+
+    return choices[:25]
+
     # Allow custom date formats
     if not matches:
         return [app_commands.Choice(name=current, value=current)]
@@ -1841,18 +1868,14 @@ async def schedule_book(
         _scheduled_tasks[schedule_id] = task
 
 
-@schedule_group.command(name="once", description="Schedule a one-time task")
+@schedule_group.command(name="once", description="Schedule a one-time court booking")
 @app_commands.describe(
-    task="Choose what to run (open play registration or court booking)",
-    when="Date/time to run (local). Format: YYYY-MM-DD HH:MM (24h).",
-    booking_time="Court time to book (for booking tasks, e.g., 21:00)",
-    duration="Duration in hours (for booking tasks)",
+    date="Date to run (today, tomorrow, +3d, 12/15, or latest)",
+    run_time="Time to run the booking script (HH:MM 24h)",
+    booking_time="Court time to book (HH:MM 24h)",
+    duration="Duration in hours",
     court="Specific court to book (or 'any' for auto-select)",
 )
-@app_commands.choices(task=[
-    app_commands.Choice(name="Open Play", value="openplay"),
-    app_commands.Choice(name="Book Court", value="book"),
-])
 @app_commands.choices(duration=[
     app_commands.Choice(name="1 hour", value=1.0),
     app_commands.Choice(name="1.5 hours", value=1.5),
@@ -1860,16 +1883,21 @@ async def schedule_book(
     app_commands.Choice(name="2.5 hours", value=2.5),
     app_commands.Choice(name="3 hours", value=3.0),
 ])
-@app_commands.autocomplete(court=court_autocomplete, booking_time=time_autocomplete)
+@app_commands.autocomplete(
+    date=date_autocomplete,
+    run_time=time_autocomplete,
+    booking_time=time_autocomplete,
+    court=court_autocomplete,
+)
 async def schedule_once(
     interaction: discord.Interaction,
-    task: app_commands.Choice[str],
-    when: str,
-    booking_time: str | None = None,
-    duration: float | None = None,
+    date: str,
+    run_time: str,
+    booking_time: str,
+    duration: float,
     court: str = "any",
 ):
-    """Schedule a one-time run for open play or booking."""
+    """Schedule a one-time court booking (same options as /book + run time)."""
     # Check credentials
     if not user_exists(interaction.user.id):
         await interaction.response.send_message(
@@ -1878,26 +1906,58 @@ async def schedule_once(
         )
         return
 
-    # Accept either a formatted datetime or a date key like "today"/"YYYY-MM-DD"
-    run_dt = None
-    # Option 1: key from predefined list (today + next 4 days)
-    predefined = {d.strftime("%Y-%m-%d"): d for d in _next_n_dates(5)}
-    if when.lower() in ("today", "tomorrow"):
-        base_date = datetime.now().date() + timedelta(days=0 if when.lower() == "today" else 1)
-        # Default to 19:00 if only date provided
-        run_dt = datetime.combine(base_date, datetime.strptime("19:00", "%H:%M").time())
-    elif when in predefined:
-        run_dt = datetime.combine(predefined[when], datetime.strptime("19:00", "%H:%M").time())
-    else:
-        # Fallback: full datetime
+    # Validate times
+    if not _validate_time(run_time):
+        await interaction.response.send_message(
+            "❌ Invalid run time format. Use HH:MM (e.g., 07:00).",
+            ephemeral=True,
+        )
+        return
+    if not _validate_time(booking_time):
+        await interaction.response.send_message(
+            "❌ Invalid booking time format. Use HH:MM (e.g., 21:00).",
+            ephemeral=True,
+        )
+        return
+
+    # Parse date option similar to /book date
+    today = datetime.now().date()
+    target_date = None
+    if date.lower() == "today":
+        target_date = today
+    elif date.lower() == "tomorrow":
+        target_date = today + timedelta(days=1)
+    elif date.lower().startswith("+") and date.lower().endswith("d"):
         try:
-            run_dt = datetime.strptime(when, "%Y-%m-%d %H:%M")
+            days = int(date[1:-1])
+            target_date = today + timedelta(days=days)
+        except ValueError:
+            target_date = None
+    elif "/" in date:
+        try:
+            month, day = map(int, date.split("/"))
+            target_date = datetime(datetime.now().year, month, day).date()
         except Exception:
-            await interaction.response.send_message(
-                "❌ Invalid datetime. Use `YYYY-MM-DD HH:MM` (24h), or pick from the dropdown.",
-                ephemeral=True,
-            )
-            return
+            target_date = None
+    elif date.lower() == "latest":
+        target_date = today + timedelta(days=5)
+
+    if not target_date:
+        await interaction.response.send_message(
+            "❌ Invalid date. Use today, tomorrow, +Nd (e.g., +3d), MM/DD, or latest.",
+            ephemeral=True,
+        )
+        return
+
+    # Build run datetime
+    try:
+        run_dt = datetime.combine(target_date, datetime.strptime(run_time, "%H:%M").time())
+    except Exception:
+        await interaction.response.send_message(
+            "❌ Could not parse run time. Use HH:MM (e.g., 07:00).",
+            ephemeral=True,
+        )
+        return
 
     if run_dt <= datetime.now():
         await interaction.response.send_message(
@@ -1906,29 +1966,15 @@ async def schedule_once(
         )
         return
 
-    params = None
-    if task.value == "book":
-        if not booking_time or duration is None:
-            await interaction.response.send_message(
-                "❌ For booking, please provide `booking_time` and `duration`.",
-                ephemeral=True,
-            )
-            return
-        if not _validate_time(booking_time):
-            await interaction.response.send_message(
-                "❌ Invalid booking time format. Use HH:MM (e.g., 21:00).",
-                ephemeral=True,
-            )
-            return
-        params = {
-            "booking_time": booking_time,
-            "duration": duration,
-            "court": court,
-        }
+    params = {
+        "booking_time": booking_time,
+        "duration": duration,
+        "court": court,
+    }
 
     schedule_id = save_schedule(
         discord_id=interaction.user.id,
-        task_type=task.value,
+        task_type="book",
         day_of_week=run_dt.weekday(),
         hour=run_dt.hour,
         minute=run_dt.minute,
@@ -1939,27 +1985,26 @@ async def schedule_once(
 
     when_display = run_dt.strftime("%a %m/%d @ %I:%M %p")
     embed = discord.Embed(
-        title="✅ One-Time Schedule Created",
-        description=f"{task.name} will run once at the specified time.",
+        title="✅ One-Time Booking Scheduled",
+        description="A single booking run has been scheduled.",
         color=discord.Color.green(),
     )
-    embed.add_field(name="When", value=when_display, inline=True)
+    embed.add_field(name="Run At", value=when_display, inline=True)
+    embed.add_field(name="Books For", value=_format_12h(booking_time), inline=True)
+    embed.add_field(name="Duration", value=f"{duration}h", inline=True)
+    court_display = "Any" if court.lower() == "any" else court.replace("Pickleball Court ", "").replace(" (Bubble B)", "")
+    embed.add_field(name="Court", value=court_display, inline=True)
     embed.add_field(name="Schedule ID", value=f"#{schedule_id}", inline=True)
-    if task.value == "book" and params:
-        embed.add_field(name="Books For", value=_format_12h(params['booking_time']), inline=True)
-        embed.add_field(name="Duration", value=f"{params['duration']}h", inline=True)
-        court_display = "Any" if court.lower() == "any" else court.replace("Pickleball Court ", "").replace(" (Bubble B)", "")
-        embed.add_field(name="Court", value=court_display, inline=True)
     embed.set_footer(text="Use /schedule list to view, /schedule remove to delete.")
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
-    log.info(f"User {interaction.user.id} created one-time schedule #{schedule_id}: {task.value} at {when}")
+    log.info(f"User {interaction.user.id} created one-time booking schedule #{schedule_id}: run at {when_display}, booking {booking_time}")
 
     # Immediately schedule the task
     sched = {
         "id": schedule_id,
         "discord_id": interaction.user.id,
-        "task_type": task.value,
+        "task_type": "book",
         "day_of_week": run_dt.weekday(),
         "hour": run_dt.hour,
         "minute": run_dt.minute,
