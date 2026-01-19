@@ -2307,27 +2307,31 @@ async def schedule_list(interaction: discord.Interaction):
             court_display = "Any" if court == "any" else court.replace("Pickleball Court ", "").replace(" (Bubble B)", "")
             booking_date = _booking_target_date(sched) or "latest"
 
-            header = f"🆔 {sched['id']} • {sched['task_type'].title()} • {status}"
+            desc_lines = [
+                f"🆔 ID: {sched['id']} • {sched['task_type'].title()}",
+                f"🕒 Runs: {when_display}",
+                f"📅 Books: {booking_date} @ {_format_12h(booking_time)} ({duration}h)",
+                f"🎯 Status: {status} • Last: {last_run}",
+                f"🏟️ Court: {court_display}",
+            ]
             if one_time:
-                header += " • 🧭 One-Time"
-
-            desc = (
-                f"{header}\n"
-                f"Runs: {when_display} | Books: {booking_date} @ {_format_12h(booking_time)} | Court: {court_display} | Last: {last_run}"
-            )
+                desc_lines.append("🧭 One-Time: Will run once then be removed")
+            desc = "\n".join(desc_lines)
         else:
-            header = f"🆔 {sched['id']} • {sched['task_type'].title()} • {status}"
+            desc_lines = [
+                f"🆔 ID: {sched['id']} • {sched['task_type'].title()}",
+                f"🕒 Runs: {when_display}",
+                f"🎯 Status: {status} • Last: {last_run}",
+            ]
             if one_time:
-                header += " • 🧭 One-Time"
-            desc = f"{header}\nWhen: {when_display} | Last: {last_run}"
+                desc_lines.append("🧭 One-Time: Will run once then be removed")
+            desc = "\n".join(desc_lines)
 
-        # Two-line style, then a separator line
         embed.add_field(
             name="\u200b",
             value=desc,
             inline=False,
         )
-        embed.add_field(name="\u200b", value="----", inline=False)
 
     embed.set_footer(text="Select a schedule below to manage it.")
 
