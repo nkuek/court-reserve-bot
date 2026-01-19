@@ -112,7 +112,7 @@ COMMON_TIMES = [
 ]
 
 def get_date_options() -> list[tuple[str, str]]:
-    """Generate date options with actual dates."""
+    """Generate date options with actual dates (full week starting today)."""
     today = datetime.now()
 
     options = []
@@ -126,14 +126,14 @@ def get_date_options() -> list[tuple[str, str]]:
     tomorrow_str = tomorrow.strftime("%a %m/%d")
     options.append(("tomorrow", f"Tomorrow ({tomorrow_str})"))
 
-    # +2d through +4d
-    for days in range(2, 5):
+    # +2d through +6d (full week)
+    for days in range(2, 7):
         future = today + timedelta(days=days)
         future_str = future.strftime("%a %m/%d")
         options.append((f"+{days}d", future_str))
 
-    # Latest (5 days ahead)
-    latest = today + timedelta(days=5)
+    # Latest (7 days ahead)
+    latest = today + timedelta(days=7)
     latest_str = latest.strftime("%a %m/%d")
     options.append(("latest", f"{latest_str} (earliest booking)"))
 
