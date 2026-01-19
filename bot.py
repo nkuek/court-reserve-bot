@@ -1679,6 +1679,20 @@ def _compute_next_run_datetime(target_day: int, hour: int, minute: int) -> datet
         days_ahead += 7
     return candidate + timedelta(days=days_ahead)
 
+
+def _booking_target_date(sched: dict) -> str | None:
+    """Return booking date (run date + 5 days) as string for booking tasks."""
+    if sched.get("task_type") != "book":
+        return None
+    try:
+        if sched.get("one_time") and sched.get("run_at"):
+            run_dt = datetime.fromisoformat(sched["run_at"])
+        else:
+            run_dt = _compute_next_run_datetime(sched["day_of_week"], sched["hour"], sched["minute"])
+        return (run_dt.date() + timedelta(days=5)).strftime("%a %m/%d")
+    except Exception:
+        return None
+
 # Command group for schedule commands
 schedule_group = app_commands.Group(name="schedule", description="Manage recurring scheduled tasks")
 tree.add_command(schedule_group)
@@ -2282,10 +2296,11 @@ async def schedule_list(interaction: discord.Interaction):
             duration = params.get("duration", "?")
             court = params.get("court", "any")
             court_display = "Any" if court == "any" else court.replace("Pickleball Court ", "").replace(" (Bubble B)", "")
+            booking_date = _booking_target_date(sched) or "latest"
 
             desc = (
                 f"**Runs:** {when_display}\n"
-                f"**Books:** latest @ {_format_12h(booking_time)} ({duration}h)\n"
+                f"**Books:** {booking_date} @ {_format_12h(booking_time)} ({duration}h)\n"
                 f"**Court:** {court_display}\n"
                 f"**Status:** {status} • Last run: {last_run}"
             )
