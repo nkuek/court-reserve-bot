@@ -2307,19 +2307,19 @@ async def schedule_list(interaction: discord.Interaction):
             court_display = "Any" if court == "any" else court.replace("Pickleball Court ", "").replace(" (Bubble B)", "")
             booking_date = _booking_target_date(sched) or "latest"
 
+            id_suffix = " ⏱️" if one_time else " ♾️"
             desc_lines = [
-                f"**ID:** {sched['id']} • {sched['task_type'].title()}",
+                f"**ID:** {sched['id']} • {sched['task_type'].title()}{id_suffix}",
                 f"**Runs:** {when_display}",
                 f"**Books:** {booking_date} @ {_format_12h(booking_time)} ({duration}h)",
                 f"**Status:** {status} • Last: {last_run}",
                 f"**Court:** {court_display}",
             ]
-            if one_time:
-                desc_lines.append("**One-Time:** Will run once then be removed")
             desc = "\n".join(desc_lines)
         else:
+            id_suffix = " ⏱️" if one_time else " ♾️"
             desc_lines = [
-                f"**ID:** {sched['id']} • {sched['task_type'].title()}",
+                f"**ID:** {sched['id']} • {sched['task_type'].title()}{id_suffix}",
                 f"**Runs:** {when_display}",
                 f"**Status:** {status} • Last: {last_run}",
             ]
