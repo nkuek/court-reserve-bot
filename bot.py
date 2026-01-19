@@ -1693,6 +1693,25 @@ def _booking_target_date(sched: dict) -> str | None:
     except Exception:
         return None
 
+
+def _booking_day_choices() -> list[app_commands.Choice]:
+    """Day choices with helper text indicating booking date (run day + 5)."""
+    choices = []
+    for num in range(7):
+        run_name = DAY_NAMES.get(num, "?")
+        book_name = DAY_NAMES.get((num + 5) % 7, "?")
+        choices.append(app_commands.Choice(name=f"{run_name} (books {book_name})", value=num))
+    return choices
+
+
+def _openplay_day_choices() -> list[app_commands.Choice]:
+    """Open play day choices with helper text (run day -> registration day)."""
+    # Existing mapping: Thursday run → books Tuesday; Saturday run → books Thursday
+    return [
+        app_commands.Choice(name="Thursday (books Tuesday)", value=3),
+        app_commands.Choice(name="Saturday (books Thursday)", value=5),
+    ]
+
 # Command group for schedule commands
 schedule_group = app_commands.Group(name="schedule", description="Manage recurring scheduled tasks")
 tree.add_command(schedule_group)
@@ -1703,10 +1722,7 @@ tree.add_command(schedule_group)
     day="Day of week to run (Choose Thursday to book for open play on Tuesday, Saturday for Thursday)",
     time="Time to run (e.g., 19:00 for 7 PM)",
 )
-@app_commands.choices(day=[
-    app_commands.Choice(name="Thursday", value=3),
-    app_commands.Choice(name="Saturday", value=5),
-])
+@app_commands.choices(day=_openplay_day_choices())
 async def schedule_openplay(
     interaction: discord.Interaction,
     day: int,
@@ -1784,15 +1800,7 @@ async def schedule_openplay(
     duration="Duration in hours (1, 1.5, 2, 2.5, or 3)",
     court="Specific court to book (or 'any' for auto-select)",
 )
-@app_commands.choices(day=[
-    app_commands.Choice(name="Monday", value=0),
-    app_commands.Choice(name="Tuesday", value=1),
-    app_commands.Choice(name="Wednesday", value=2),
-    app_commands.Choice(name="Thursday", value=3),
-    app_commands.Choice(name="Friday", value=4),
-    app_commands.Choice(name="Saturday", value=5),
-    app_commands.Choice(name="Sunday", value=6),
-])
+@app_commands.choices(day=_booking_day_choices())
 @app_commands.choices(duration=[
     app_commands.Choice(name="1 hour", value=1.0),
     app_commands.Choice(name="1.5 hours", value=1.5),
