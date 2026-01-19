@@ -2296,6 +2296,7 @@ async def schedule_list(interaction: discord.Interaction):
             status = "✅ Active"
 
         last_run = sched["last_run"] or "Never"
+        one_time = sched.get("one_time")
 
         # Build description based on task type
         if sched["task_type"] == "book" and sched.get("params"):
@@ -2318,10 +2319,16 @@ async def schedule_list(interaction: discord.Interaction):
 
         # Make ID very prominent with emoji
         embed.add_field(
-            name=f"🆔 {sched['id']}  •  {sched['task_type'].title()}",
+            name=f"ID {sched['id']}  •  {sched['task_type'].title()}",
             value=desc,
             inline=False,
         )
+        if one_time:
+            embed.add_field(
+                name="One-Time",
+                value="This schedule will run once, then be removed.",
+                inline=False,
+            )
 
     embed.set_footer(text="Select a schedule below to manage it.")
 
