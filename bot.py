@@ -1635,6 +1635,12 @@ def _format_schedule_when(sched: dict) -> tuple[str, datetime | None]:
     time_12h = f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
     return f"{day_name} @ {time_12h}", None
 
+
+def _next_n_dates(n: int = 5) -> list[datetime]:
+    """Return next n dates including today."""
+    today = datetime.now().date()
+    return [today + timedelta(days=i) for i in range(n)]
+
 # Command group for schedule commands
 schedule_group = app_commands.Group(name="schedule", description="Manage recurring scheduled tasks")
 tree.add_command(schedule_group)
@@ -1872,15 +1878,26 @@ async def schedule_once(
         )
         return
 
-    # Parse datetime
-    try:
-        run_dt = datetime.strptime(when, "%Y-%m-%d %H:%M")
-    except Exception:
-        await interaction.response.send_message(
-            "❌ Invalid datetime. Use `YYYY-MM-DD HH:MM` (24h), e.g., `2026-01-17 18:59`.",
-            ephemeral=True,
-        )
-        return
+    # Accept either a formatted datetime or a date key like "today"/"YYYY-MM-DD"
+    run_dt = None
+    # Option 1: key from predefined list (today + next 4 days)
+    predefined = {d.strftime("%Y-%m-%d"): d for d in _next_n_dates(5)}
+    if when.lower() in ("today", "tomorrow"):
+        base_date = datetime.now().date() + timedelta(days=0 if when.lower() == "today" else 1)
+        # Default to 19:00 if only date provided
+        run_dt = datetime.combine(base_date, datetime.strptime("19:00", "%H:%M").time())
+    elif when in predefined:
+        run_dt = datetime.combine(predefined[when], datetime.strptime("19:00", "%H:%M").time())
+    else:
+        # Fallback: full datetime
+        try:
+            run_dt = datetime.strptime(when, "%Y-%m-%d %H:%M")
+        except Exception:
+            await interaction.response.send_message(
+                "❌ Invalid datetime. Use `YYYY-MM-DD HH:MM` (24h), or pick from the dropdown.",
+                ephemeral=True,
+            )
+            return
 
     if run_dt <= datetime.now():
         await interaction.response.send_message(
