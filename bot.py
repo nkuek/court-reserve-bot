@@ -15,6 +15,7 @@ Commands:
 
 import asyncio
 import io
+import aiohttp
 import json
 import logging
 import os
@@ -1120,7 +1121,8 @@ class FullLogView(discord.ui.View):
     """View with a button to show the full log."""
 
     def __init__(self, full_log: str, task_name: str):
-        super().__init__(timeout=300)  # 5 minute timeout
+        # Keep the button active indefinitely so users can download later
+        super().__init__(timeout=None)
         self.full_log = full_log
         self.task_name = task_name
 
@@ -1131,16 +1133,40 @@ class FullLogView(discord.ui.View):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"log_{timestamp}.txt"
 
-        file = discord.File(
-            io.BytesIO(self.full_log.encode("utf-8")),
-            filename=filename,
-        )
+        # Upload to 0x0.st for a simple public link (do not use for secrets)
+        upload_url = None
+        try:
+            form = aiohttp.FormData()
+            form.add_field(
+                "file",
+                self.full_log.encode("utf-8"),
+                filename=filename,
+                content_type="text/plain",
+            )
+            async with aiohttp.ClientSession() as session:
+                async with session.post("https://0x0.st", data=form, timeout=30) as resp:
+                    if resp.status == 200:
+                        upload_url = (await resp.text()).strip()
+        except Exception as e:
+            # Fall back to direct attachment
+            upload_url = None
 
-        await interaction.response.send_message(
-            f"📜 **Full log for {self.task_name}:**",
-            file=file,
-            ephemeral=True,
-        )
+        content = f"📜 **Full log for {self.task_name}:**"
+        if upload_url:
+            content += f"\n{upload_url}"
+
+        if upload_url:
+            await interaction.response.send_message(content, ephemeral=True)
+        else:
+            file = discord.File(
+                io.BytesIO(self.full_log.encode("utf-8")),
+                filename=filename,
+            )
+            await interaction.response.send_message(
+                content,
+                file=file,
+                ephemeral=True,
+            )
 
         # Disable the button after use
         button.disabled = True
