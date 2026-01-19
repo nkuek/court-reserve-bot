@@ -2308,23 +2308,23 @@ async def schedule_list(interaction: discord.Interaction):
             booking_date = _booking_target_date(sched) or "latest"
 
             desc_lines = [
-                f"🆔 ID: {sched['id']} • {sched['task_type'].title()}",
-                f"🕒 Runs: {when_display}",
-                f"📅 Books: {booking_date} @ {_format_12h(booking_time)} ({duration}h)",
-                f"🎯 Status: {status} • Last: {last_run}",
-                f"🏟️ Court: {court_display}",
+                f"**ID:** {sched['id']} • {sched['task_type'].title()}",
+                f"**Runs:** {when_display}",
+                f"**Books:** {booking_date} @ {_format_12h(booking_time)} ({duration}h)",
+                f"**Status:** {status} • Last: {last_run}",
+                f"**Court:** {court_display}",
             ]
             if one_time:
-                desc_lines.append("🧭 One-Time: Will run once then be removed")
+                desc_lines.append("**One-Time:** Will run once then be removed")
             desc = "\n".join(desc_lines)
         else:
             desc_lines = [
-                f"🆔 ID: {sched['id']} • {sched['task_type'].title()}",
-                f"🕒 Runs: {when_display}",
-                f"🎯 Status: {status} • Last: {last_run}",
+                f"**ID:** {sched['id']} • {sched['task_type'].title()}",
+                f"**Runs:** {when_display}",
+                f"**Status:** {status} • Last: {last_run}",
             ]
             if one_time:
-                desc_lines.append("🧭 One-Time: Will run once then be removed")
+                desc_lines.append("**One-Time:** Will run once then be removed")
             desc = "\n".join(desc_lines)
 
         embed.add_field(
