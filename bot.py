@@ -112,30 +112,31 @@ COMMON_TIMES = [
 ]
 
 def get_date_options() -> list[tuple[str, str]]:
-    """Generate date options with actual dates (full week starting today)."""
+    """Generate date options with actual run dates and implied booking dates (+5d)."""
     today = datetime.now()
 
     options = []
 
     # Today
     today_str = today.strftime("%a %m/%d")
-    options.append(("today", f"Today ({today_str})"))
+    options.append(("today", f"Today ({today_str}) → books { (today + timedelta(days=5)).strftime('%a %m/%d') }"))
 
     # Tomorrow
     tomorrow = today + timedelta(days=1)
     tomorrow_str = tomorrow.strftime("%a %m/%d")
-    options.append(("tomorrow", f"Tomorrow ({tomorrow_str})"))
+    options.append(("tomorrow", f"Tomorrow ({tomorrow_str}) → books { (tomorrow + timedelta(days=5)).strftime('%a %m/%d') }"))
 
     # +2d through +6d (full week)
     for days in range(2, 7):
         future = today + timedelta(days=days)
         future_str = future.strftime("%a %m/%d")
-        options.append((f"+{days}d", future_str))
+        book_str = (future + timedelta(days=5)).strftime("%a %m/%d")
+        options.append((f"+{days}d", f"{future_str} → books {book_str}"))
 
     # Latest (7 days ahead)
     latest = today + timedelta(days=7)
     latest_str = latest.strftime("%a %m/%d")
-    options.append(("latest", f"{latest_str} (earliest booking)"))
+    options.append(("latest", f"{latest_str} → books {(latest + timedelta(days=5)).strftime('%a %m/%d')} (earliest booking)"))
 
     return options
 
@@ -1668,6 +1669,16 @@ def _next_n_dates(n: int = 5) -> list[datetime]:
     today = datetime.now().date()
     return [today + timedelta(days=i) for i in range(n)]
 
+
+def _compute_next_run_datetime(target_day: int, hour: int, minute: int) -> datetime:
+    """Compute the next datetime in the future for the given weekday and time."""
+    now = datetime.now()
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    days_ahead = target_day - now.weekday()
+    if days_ahead < 0 or (days_ahead == 0 and candidate <= now):
+        days_ahead += 7
+    return candidate + timedelta(days=days_ahead)
+
 # Command group for schedule commands
 schedule_group = app_commands.Group(name="schedule", description="Manage recurring scheduled tasks")
 tree.add_command(schedule_group)
@@ -1843,7 +1854,9 @@ async def schedule_book(
         color=discord.Color.green(),
     )
     embed.add_field(name="Runs At", value=f"{day_name} @ {run_time_12h}", inline=True)
-    embed.add_field(name="Books For", value=f"latest @ {booking_time_12h}", inline=True)
+    next_run_dt = _compute_next_run_datetime(day, hour, minute)
+    books_date = (next_run_dt.date() + timedelta(days=5)).strftime("%a %m/%d")
+    embed.add_field(name="Books For", value=f"{books_date} @ {booking_time_12h}", inline=True)
     embed.add_field(name="Duration", value=f"{duration}h", inline=True)
     embed.add_field(name="Court", value=court_display, inline=True)
     embed.add_field(name="Schedule ID", value=f"#{schedule_id}", inline=True)
@@ -1990,7 +2003,8 @@ async def schedule_once(
         color=discord.Color.green(),
     )
     embed.add_field(name="Run At", value=when_display, inline=True)
-    embed.add_field(name="Books For", value=_format_12h(booking_time), inline=True)
+    books_date = (run_dt.date() + timedelta(days=5)).strftime("%a %m/%d")
+    embed.add_field(name="Books For", value=f"{books_date} @ {_format_12h(booking_time)}", inline=True)
     embed.add_field(name="Duration", value=f"{duration}h", inline=True)
     court_display = "Any" if court.lower() == "any" else court.replace("Pickleball Court ", "").replace(" (Bubble B)", "")
     embed.add_field(name="Court", value=court_display, inline=True)
