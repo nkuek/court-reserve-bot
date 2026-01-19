@@ -172,12 +172,19 @@ def _init_schedules_table(conn: sqlite3.Connection) -> None:
             last_run TEXT,
             params TEXT,
             skip_next INTEGER DEFAULT 0,
+            run_at TEXT,
+            one_time INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (discord_id) REFERENCES users(discord_id)
         )
     """)
     # Add columns if they don't exist (for existing databases)
-    for col, col_type in [("params", "TEXT"), ("skip_next", "INTEGER DEFAULT 0")]:
+    for col, col_type in [
+        ("params", "TEXT"),
+        ("skip_next", "INTEGER DEFAULT 0"),
+        ("run_at", "TEXT"),
+        ("one_time", "INTEGER DEFAULT 0"),
+    ]:
         try:
             conn.execute(f"ALTER TABLE schedules ADD COLUMN {col} {col_type}")
             conn.commit()
@@ -193,6 +200,8 @@ def save_schedule(
     hour: int,
     minute: int,
     params: dict | None = None,
+    run_at: str | None = None,
+    one_time: bool = False,
 ) -> int:
     """
     Save a new scheduled task.
@@ -214,9 +223,9 @@ def save_schedule(
     params_json = json.dumps(params) if params else None
     try:
         cursor = conn.execute("""
-            INSERT INTO schedules (discord_id, task_type, day_of_week, hour, minute, params)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (discord_id, task_type, day_of_week, hour, minute, params_json))
+            INSERT INTO schedules (discord_id, task_type, day_of_week, hour, minute, params, run_at, one_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (discord_id, task_type, day_of_week, hour, minute, params_json, run_at, 1 if one_time else 0))
         conn.commit()
         return cursor.lastrowid
     finally:
@@ -235,7 +244,7 @@ def get_user_schedules(discord_id: int) -> list[dict]:
     _init_schedules_table(conn)
     try:
         cursor = conn.execute("""
-            SELECT id, task_type, day_of_week, hour, minute, enabled, last_run, params, skip_next
+            SELECT id, task_type, day_of_week, hour, minute, enabled, last_run, params, skip_next, run_at, one_time
             FROM schedules
             WHERE discord_id = ?
             ORDER BY day_of_week, hour, minute
@@ -253,6 +262,8 @@ def get_user_schedules(discord_id: int) -> list[dict]:
                 "last_run": row[6],
                 "params": json.loads(row[7]) if row[7] else None,
                 "skip_next": bool(row[8]) if row[8] is not None else False,
+                "run_at": row[9],
+                "one_time": bool(row[10]) if row[10] is not None else False,
             })
         return schedules
     finally:
@@ -271,7 +282,7 @@ def get_all_schedules() -> list[dict]:
     _init_schedules_table(conn)
     try:
         cursor = conn.execute("""
-            SELECT id, discord_id, task_type, day_of_week, hour, minute, last_run, params, skip_next
+            SELECT id, discord_id, task_type, day_of_week, hour, minute, last_run, params, skip_next, run_at, one_time
             FROM schedules
             WHERE enabled = 1
         """)
@@ -288,6 +299,8 @@ def get_all_schedules() -> list[dict]:
                 "last_run": row[6],
                 "params": json.loads(row[7]) if row[7] else None,
                 "skip_next": bool(row[8]) if row[8] is not None else False,
+                "run_at": row[9],
+                "one_time": bool(row[10]) if row[10] is not None else False,
             })
         return schedules
     finally:
@@ -387,7 +400,7 @@ def admin_get_all_schedules() -> list[dict]:
     _init_schedules_table(conn)
     try:
         cursor = conn.execute("""
-            SELECT id, discord_id, task_type, day_of_week, hour, minute, enabled, last_run, params, skip_next
+            SELECT id, discord_id, task_type, day_of_week, hour, minute, enabled, last_run, params, skip_next, run_at, one_time
             FROM schedules
             ORDER BY discord_id, day_of_week, hour, minute
         """)
@@ -405,6 +418,8 @@ def admin_get_all_schedules() -> list[dict]:
                 "last_run": row[7],
                 "params": json.loads(row[8]) if row[8] else None,
                 "skip_next": bool(row[9]) if row[9] is not None else False,
+                "run_at": row[10],
+                "one_time": bool(row[11]) if row[11] is not None else False,
             })
         return schedules
     finally:

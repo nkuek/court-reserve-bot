@@ -1618,6 +1618,23 @@ DAYS_OF_WEEK = [
 
 DAY_NAMES = {num: name for _, name, num in DAYS_OF_WEEK}
 
+# Helpers
+def _format_schedule_when(sched: dict) -> tuple[str, datetime | None]:
+    """Return human display string and parsed datetime (if one-time)."""
+    if sched.get("one_time") and sched.get("run_at"):
+        try:
+            dt = datetime.fromisoformat(sched["run_at"])
+            return dt.strftime("%a %m/%d @ %I:%M %p"), dt
+        except Exception:
+            return "Invalid date/time", None
+
+    day = sched.get("day_of_week")
+    hour = sched.get("hour", 0)
+    minute = sched.get("minute", 0)
+    day_name = DAY_NAMES.get(day, "?")
+    time_12h = f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
+    return f"{day_name} @ {time_12h}", None
+
 # Command group for schedule commands
 schedule_group = app_commands.Group(name="schedule", description="Manage recurring scheduled tasks")
 tree.add_command(schedule_group)
@@ -1818,6 +1835,127 @@ async def schedule_book(
         _scheduled_tasks[schedule_id] = task
 
 
+@schedule_group.command(name="once", description="Schedule a one-time task")
+@app_commands.describe(
+    task="Choose what to run (open play registration or court booking)",
+    when="Date/time to run (local). Format: YYYY-MM-DD HH:MM (24h).",
+    booking_time="Court time to book (for booking tasks, e.g., 21:00)",
+    duration="Duration in hours (for booking tasks)",
+    court="Specific court to book (or 'any' for auto-select)",
+)
+@app_commands.choices(task=[
+    app_commands.Choice(name="Open Play", value="openplay"),
+    app_commands.Choice(name="Book Court", value="book"),
+])
+@app_commands.choices(duration=[
+    app_commands.Choice(name="1 hour", value=1.0),
+    app_commands.Choice(name="1.5 hours", value=1.5),
+    app_commands.Choice(name="2 hours", value=2.0),
+    app_commands.Choice(name="2.5 hours", value=2.5),
+    app_commands.Choice(name="3 hours", value=3.0),
+])
+@app_commands.autocomplete(court=court_autocomplete, booking_time=time_autocomplete)
+async def schedule_once(
+    interaction: discord.Interaction,
+    task: app_commands.Choice[str],
+    when: str,
+    booking_time: str | None = None,
+    duration: float | None = None,
+    court: str = "any",
+):
+    """Schedule a one-time run for open play or booking."""
+    # Check credentials
+    if not user_exists(interaction.user.id):
+        await interaction.response.send_message(
+            "❌ You need to `/register` first.",
+            ephemeral=True,
+        )
+        return
+
+    # Parse datetime
+    try:
+        run_dt = datetime.strptime(when, "%Y-%m-%d %H:%M")
+    except Exception:
+        await interaction.response.send_message(
+            "❌ Invalid datetime. Use `YYYY-MM-DD HH:MM` (24h), e.g., `2026-01-17 18:59`.",
+            ephemeral=True,
+        )
+        return
+
+    if run_dt <= datetime.now():
+        await interaction.response.send_message(
+            "❌ The time you entered is in the past. Please choose a future time.",
+            ephemeral=True,
+        )
+        return
+
+    params = None
+    if task.value == "book":
+        if not booking_time or duration is None:
+            await interaction.response.send_message(
+                "❌ For booking, please provide `booking_time` and `duration`.",
+                ephemeral=True,
+            )
+            return
+        if not _validate_time(booking_time):
+            await interaction.response.send_message(
+                "❌ Invalid booking time format. Use HH:MM (e.g., 21:00).",
+                ephemeral=True,
+            )
+            return
+        params = {
+            "booking_time": booking_time,
+            "duration": duration,
+            "court": court,
+        }
+
+    schedule_id = save_schedule(
+        discord_id=interaction.user.id,
+        task_type=task.value,
+        day_of_week=run_dt.weekday(),
+        hour=run_dt.hour,
+        minute=run_dt.minute,
+        params=params,
+        run_at=run_dt.isoformat(),
+        one_time=True,
+    )
+
+    when_display = run_dt.strftime("%a %m/%d @ %I:%M %p")
+    embed = discord.Embed(
+        title="✅ One-Time Schedule Created",
+        description=f"{task.name} will run once at the specified time.",
+        color=discord.Color.green(),
+    )
+    embed.add_field(name="When", value=when_display, inline=True)
+    embed.add_field(name="Schedule ID", value=f"#{schedule_id}", inline=True)
+    if task.value == "book" and params:
+        embed.add_field(name="Books For", value=_format_12h(params['booking_time']), inline=True)
+        embed.add_field(name="Duration", value=f"{params['duration']}h", inline=True)
+        court_display = "Any" if court.lower() == "any" else court.replace("Pickleball Court ", "").replace(" (Bubble B)", "")
+        embed.add_field(name="Court", value=court_display, inline=True)
+    embed.set_footer(text="Use /schedule list to view, /schedule remove to delete.")
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+    log.info(f"User {interaction.user.id} created one-time schedule #{schedule_id}: {task.value} at {when}")
+
+    # Immediately schedule the task
+    sched = {
+        "id": schedule_id,
+        "discord_id": interaction.user.id,
+        "task_type": task.value,
+        "day_of_week": run_dt.weekday(),
+        "hour": run_dt.hour,
+        "minute": run_dt.minute,
+        "last_run": None,
+        "params": params,
+        "run_at": run_dt.isoformat(),
+        "one_time": True,
+    }
+    if schedule_id not in _scheduled_tasks:
+        task_handle = asyncio.create_task(schedule_next_run(sched))
+        _scheduled_tasks[schedule_id] = task_handle
+
+
 async def schedule_autocomplete(
     interaction: discord.Interaction,
     current: str,
@@ -1863,13 +2001,9 @@ class ScheduleManageView(discord.ui.View):
         # Create schedule selector dropdown
         options = []
         for sched in schedules:
-            day_name = DAY_NAMES.get(sched["day_of_week"], "?")[:3]
-            hour = sched["hour"]
-            minute = sched["minute"]
-            time_12h = f"{hour % 12 or 12}:{minute:02d}{'AM' if hour < 12 else 'PM'}"
-
+            when_display, _ = _format_schedule_when(sched)
             status_emoji = "⏸️" if not sched["enabled"] else "⏭️" if sched.get("skip_next") else "✅"
-            label = f"#{sched['id']} {sched['task_type'].title()} — {day_name} @ {time_12h}"
+            label = f"#{sched['id']} {sched['task_type'].title()} — {when_display}"
 
             options.append(discord.SelectOption(
                 label=label[:100],
@@ -2001,12 +2135,9 @@ class ScheduleManageView(discord.ui.View):
                 # Update dropdown options
                 options = []
                 for sched in self.schedules.values():
-                    day_name = DAY_NAMES.get(sched["day_of_week"], "?")[:3]
-                    hour = sched["hour"]
-                    minute = sched["minute"]
-                    time_12h = f"{hour % 12 or 12}:{minute:02d}{'AM' if hour < 12 else 'PM'}"
+                    when_display, _ = _format_schedule_when(sched)
                     status_emoji = "⏸️" if not sched["enabled"] else "⏭️" if sched.get("skip_next") else "✅"
-                    label = f"#{sched['id']} {sched['task_type'].title()} — {day_name} @ {time_12h}"
+                    label = f"#{sched['id']} {sched['task_type'].title()} — {when_display}"
                     options.append(discord.SelectOption(label=label[:100], value=str(sched["id"]), emoji=status_emoji))
 
                 self.schedule_select.options = options
@@ -2054,10 +2185,7 @@ async def schedule_list(interaction: discord.Interaction):
     )
 
     for sched in schedules:
-        day_name = DAY_NAMES.get(sched["day_of_week"], "Unknown")
-        hour = sched["hour"]
-        minute = sched["minute"]
-        time_12h = f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
+        when_display, run_dt = _format_schedule_when(sched)
 
         # Build status string
         if not sched["enabled"]:
@@ -2080,14 +2208,14 @@ async def schedule_list(interaction: discord.Interaction):
             court_display = "Any" if court == "any" else court.replace("Pickleball Court ", "").replace(" (Bubble B)", "")
 
             desc = (
-                f"**Runs:** {day_name} at {time_12h}\n"
+                f"**Runs:** {when_display}\n"
                 f"**Books:** latest @ {_format_12h(booking_time)} ({duration}h)\n"
                 f"**Court:** {court_display}\n"
                 f"**Status:** {status} • Last run: {last_run}"
             )
         else:
             # openplay or other
-            desc = f"**When:** {day_name} at {time_12h}\n**Status:** {status}\n**Last run:** {last_run}"
+            desc = f"**When:** {when_display}\n**Status:** {status}\n**Last run:** {last_run}"
 
         # Make ID very prominent with emoji
         embed.add_field(
@@ -2329,39 +2457,59 @@ _running_scheduled: dict[int, tuple[asyncio.subprocess.Process, str]] = {}
 async def schedule_next_run(sched: dict):
     """Schedule a task to run at its exact scheduled time."""
     schedule_id = sched["id"]
+    is_one_time = sched.get("one_time") or False
+    run_at = sched.get("run_at")
 
     # Calculate seconds until next run
     now = datetime.now()
-    target_day = sched["day_of_week"]
-    target_hour = sched["hour"]
-    target_minute = sched["minute"]
     today_str = now.strftime("%Y-%m-%d")
 
-    # Build target datetime for this week
-    target_time_today = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+    if is_one_time and run_at:
+        try:
+            next_run = datetime.fromisoformat(run_at)
+        except Exception:
+            log.error(f"Schedule #{schedule_id}: Invalid run_at format '{run_at}', deleting schedule")
+            admin_delete_schedule(schedule_id)
+            return
+        wait_seconds = (next_run - now).total_seconds()
+        if wait_seconds < 0:
+            log.info(f"Schedule #{schedule_id} (one-time) is in the past, deleting")
+            admin_delete_schedule(schedule_id)
+            return
+        day_name = next_run.strftime("%A")
+        target_hour = next_run.hour
+        target_minute = next_run.minute
+    else:
+        target_day = sched["day_of_week"]
+        target_hour = sched["hour"]
+        target_minute = sched["minute"]
 
-    # Calculate days until target day
-    days_ahead = target_day - now.weekday()
+        # Build target datetime for this week
+        target_time_today = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
 
-    if days_ahead < 0:
-        # Target day already passed this week
-        days_ahead += 7
-    elif days_ahead == 0:
-        # Same day - check if time already passed OR already ran today
-        if now >= target_time_today or sched.get("last_run") == today_str:
-            days_ahead = 7  # Schedule for next week
-    # else: days_ahead > 0, target day is later this week (keep as-is)
+        # Calculate days until target day
+        days_ahead = target_day - now.weekday()
 
-    next_run = target_time_today + timedelta(days=days_ahead)
-    wait_seconds = (next_run - now).total_seconds()
+        if days_ahead < 0:
+            # Target day already passed this week
+            days_ahead += 7
+        elif days_ahead == 0:
+            # Same day - check if time already passed OR already ran today
+            if now >= target_time_today or sched.get("last_run") == today_str:
+                days_ahead = 7  # Schedule for next week
+        # else: days_ahead > 0, target day is later this week (keep as-is)
 
-    # Safety: ensure we're not waiting negative time
-    if wait_seconds < 0:
-        days_ahead += 7
-        next_run += timedelta(days=7)
+        next_run = target_time_today + timedelta(days=days_ahead)
         wait_seconds = (next_run - now).total_seconds()
 
-    day_name = DAY_NAMES.get(target_day, "Unknown")
+        # Safety: ensure we're not waiting negative time
+        if wait_seconds < 0:
+            days_ahead += 7
+            next_run += timedelta(days=7)
+            wait_seconds = (next_run - now).total_seconds()
+
+        day_name = DAY_NAMES.get(target_day, "Unknown")
+
     log.info(f"Schedule #{schedule_id}: Next run at {next_run.strftime('%Y-%m-%d %H:%M:%S')} ({wait_seconds:.0f}s from now)")
 
     # Send reminder 1 hour before (if more than 1 hour away)
@@ -2421,13 +2569,23 @@ async def schedule_next_run(sched: dict):
         clear_schedule_skip(schedule_id)
         try:
             user = await client.fetch_user(current_sched["discord_id"])
-            await user.send(
+            msg = (
                 f"⏭️ **Skipped scheduled task** #{schedule_id}\n"
-                f"This run was skipped as requested. The schedule will resume next week."
+                f"This run was skipped as requested."
             )
+            if current_sched.get("one_time"):
+                msg += "\nThis was a one-time schedule and will now be deleted."
+            else:
+                msg += "\nThe schedule will resume next week."
+            await user.send(msg)
         except:
             pass
         update_schedule_last_run(schedule_id, today_str)
+        if current_sched.get("one_time"):
+            admin_delete_schedule(schedule_id)
+            if schedule_id in _scheduled_tasks:
+                del _scheduled_tasks[schedule_id]
+            return
     else:
         log.info(f"⏰ Running scheduled task #{schedule_id} (precise trigger)")
         try:
@@ -2437,9 +2595,15 @@ async def schedule_next_run(sched: dict):
         except Exception as e:
             log.error(f"Schedule #{schedule_id} failed: {e}")
 
-    # Remove from tracking and reschedule for next week
+    # Remove from tracking
     if schedule_id in _scheduled_tasks:
         del _scheduled_tasks[schedule_id]
+
+    # One-time schedules: delete after run/skip
+    if current_sched and current_sched.get("one_time"):
+        log.info(f"Schedule #{schedule_id} is one-time; deleting after completion/skip")
+        admin_delete_schedule(schedule_id)
+        return
 
     # Reschedule (reload to get updated last_run)
     schedules = get_all_schedules()
@@ -3005,14 +3169,10 @@ class AdminScheduleView(discord.ui.View):
         # Create schedule selector dropdown
         options = []
         for sched in schedules[:25]:  # Discord limit
-            day_name = DAY_NAMES.get(sched["day_of_week"], "?")[:3]
-            hour = sched["hour"]
-            minute = sched["minute"]
-            time_12h = f"{hour % 12 or 12}:{minute:02d}{'AM' if hour < 12 else 'PM'}"
-
+            when_display, _ = _format_schedule_when(sched)
             status_emoji = "⏸️" if not sched["enabled"] else "✅"
             # Include user ID in label
-            label = f"#{sched['id']} U:{sched['discord_id']} {sched['task_type'][:4]} {day_name}@{time_12h}"
+            label = f"#{sched['id']} U:{sched['discord_id']} {sched['task_type'][:4]} {when_display}"
 
             options.append(discord.SelectOption(
                 label=label[:100],
@@ -3051,10 +3211,7 @@ class AdminScheduleView(discord.ui.View):
             self.remove_btn.disabled = False
 
             # Show schedule details
-            day_name = DAY_NAMES.get(sched["day_of_week"], "Unknown")
-            hour = sched["hour"]
-            minute = sched["minute"]
-            time_12h = f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
+            when_display, _ = _format_schedule_when(sched)
 
             # Update the view to enable buttons
             await interaction.response.edit_message(view=self)
@@ -3064,7 +3221,7 @@ class AdminScheduleView(discord.ui.View):
                 f"**Selected Schedule #{sched['id']}**\n"
                 f"User: <@{sched['discord_id']}> (`{sched['discord_id']}`)\n"
                 f"Type: {sched['task_type']}\n"
-                f"When: {day_name} at {time_12h}\n"
+                f"When: {when_display}\n"
                 f"Enabled: {'Yes' if sched['enabled'] else 'No'}\n"
                 f"Running: {'Yes' if sched['id'] in _running_scheduled else 'No'}",
                 ephemeral=True,
@@ -3552,12 +3709,9 @@ async def admin_schedules(interaction: discord.Interaction):
     for user_id, user_scheds in list(by_user.items())[:10]:  # Limit to 10 users
         sched_lines = []
         for s in user_scheds[:5]:  # Limit to 5 per user
-            day_abbr = DAY_NAMES.get(s["day_of_week"], "?")[:3]
-            hour = s["hour"]
-            minute = s["minute"]
-            time_12h = f"{hour % 12 or 12}:{minute:02d}{'AM' if hour < 12 else 'PM'}"
+            when_display, _ = _format_schedule_when(s)
             status = "⏸️" if not s["enabled"] else "🔄" if s["id"] in _running_scheduled else "✅"
-            sched_lines.append(f"{status} #{s['id']} {s['task_type']} {day_abbr}@{time_12h}")
+            sched_lines.append(f"{status} #{s['id']} {s['task_type']} {when_display}")
 
         if len(user_scheds) > 5:
             sched_lines.append(f"... +{len(user_scheds) - 5} more")
