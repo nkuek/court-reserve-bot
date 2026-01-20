@@ -566,16 +566,15 @@ def _run_parallel_booking(
     log.info(f"  Total processes: {total_processes}")
     log.info("=" * 50)
 
-    # Calculate staggered click offsets with a tighter window near target time
-    # Spread from -1000ms to 0ms (inclusive), always include an on-time attempt.
-    # e.g., 4 attempts: [-1000, -667, -333, 0] ms
-    if attempts_per_court == 1:
-        offsets_ms = [0]  # Single attempt exactly at target time
+    # Fixed stagger: -750ms, -500ms, -250ms, 0ms (min 4 attempts per court). Extra attempts also at 0ms.
+    if attempts_per_court <= 1:
+        offsets_ms = [0]
     else:
-        window_ms = 1000
-        step = window_ms // (attempts_per_court - 1)
-        offsets_ms = [ -window_ms + (i * step) for i in range(attempts_per_court - 1) ]
-        offsets_ms.append(0)  # Ensure an on-time attempt
+        base_offsets = [-750, -500, -250, 0]
+        if attempts_per_court <= 4:
+            offsets_ms = base_offsets[:attempts_per_court]
+        else:
+            offsets_ms = base_offsets + [0] * (attempts_per_court - 4)
 
     log.info(f"  Click offsets: {offsets_ms} ms")
 
@@ -837,8 +836,8 @@ def main(
     # Activate if --parallel flag set AND (multiple courts OR multiple attempts per court)
     log.info(f"Parallel mode check: parallel={parallel}, courts={len(courts_to_try)}, attempts={attempts}")
     if parallel and (len(courts_to_try) > 1 or attempts > 1):
-        # Ensure at least 2 processes per court
-        attempts_per_court = max(2, attempts)
+        # Ensure at least 4 processes per court
+        attempts_per_court = max(4, attempts)
 
         # Strategy:
         # - If multiple courts are available: spread attempts across all courts with min 2 per court

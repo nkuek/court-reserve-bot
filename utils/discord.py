@@ -4,6 +4,7 @@ import os
 import urllib.error
 import urllib.request
 from datetime import datetime
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -12,6 +13,7 @@ def send_discord_notification(
     message: str,
     title: str = "Court Booking Bot",
     success: bool = True,
+    log_content: Optional[str] = None,
 ):
     """
     Send a notification to Discord via webhook.
@@ -30,12 +32,42 @@ def send_discord_notification(
     # Color: green for success, red for failure
     color = 0x00FF00 if success else 0xFF0000
 
+    # Try to upload log to 0x0.st if provided
+    log_url = None
+    if log_content:
+        try:
+            boundary = "----courtreserveboundary"
+            data_parts = [
+                f"--{boundary}",
+                'Content-Disposition: form-data; name="file"; filename="log.txt"',
+                "Content-Type: text/plain",
+                "",
+                log_content,
+                f"--{boundary}--",
+                "",
+            ]
+            data = "\r\n".join(data_parts).encode("utf-8")
+            req = urllib.request.Request(
+                "https://0x0.st",
+                data=data,
+                headers={
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                    "User-Agent": "CourtBookingBot/1.0",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    log_url = resp.read().decode("utf-8").strip()
+        except Exception as e:
+            log.warning(f"Failed to upload log to 0x0.st: {e}")
+
     # Build the embed
     payload = {
         "embeds": [
             {
                 "title": f"{'✅' if success else '❌'} {title}",
-                "description": message,
+                "description": f"{message}\n\nLog: {log_url}" if log_url else message,
                 "color": color,
                 "timestamp": datetime.utcnow().isoformat(),
                 "footer": {

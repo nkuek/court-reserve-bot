@@ -299,11 +299,14 @@ def _wait_and_reload(page, target_time: datetime):
 def _compute_offsets(attempts: int) -> list[int]:
     """
     Compute offsets (ms) relative to the target time.
-    For open play, all attempts refresh right on the designated time (0ms).
+    First click happens 750ms before the designated time for parallel runs.
     """
-    if attempts <= 1:
-        return [0]
-    return [0 for _ in range(attempts)]
+    # At least 4 attempts: -750ms, -500ms, -250ms, 0ms. Extra attempts also at 0ms.
+    attempts = max(attempts, 4)
+    base_offsets = [-750, -500, -250, 0]
+    if attempts <= 4:
+        return base_offsets[:attempts]
+    return base_offsets + [0 for _ in range(attempts - 4)]
 
 
 def _run_once(

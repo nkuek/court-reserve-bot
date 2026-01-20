@@ -1175,24 +1175,30 @@ class FullLogView(discord.ui.View):
                 async with session.post("https://0x0.st", data=form, timeout=30) as resp:
                     if resp.status == 200:
                         upload_url = (await resp.text()).strip()
-        except Exception as e:
-            # Fall back to direct attachment
+        except Exception:
             upload_url = None
 
         content = f"📜 **Full log for {self.task_name}:**"
         if upload_url:
             content += f"\n{upload_url}"
 
-        if upload_url:
-            await interaction.response.send_message(content, ephemeral=True)
-        else:
+        # Always include the file attachment so the log is never empty for the user
+        file = None
+        if self.full_log:
             file = discord.File(
                 io.BytesIO(self.full_log.encode("utf-8")),
                 filename=filename,
             )
+
+        if file:
             await interaction.response.send_message(
                 content,
                 file=file,
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                content + "\n(Log was empty.)",
                 ephemeral=True,
             )
 
