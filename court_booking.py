@@ -34,6 +34,14 @@ from utils.wait import wait_until, parse_wait_time
 # Load .env from the same directory as this script
 load_dotenv(Path(__file__).parent / ".env")
 
+# Set multiprocessing start method to 'fork' on Unix for proper stdout inheritance
+# On macOS, the default 'spawn' doesn't inherit file descriptors properly
+if sys.platform != "win32":
+    try:
+        multiprocessing.set_start_method("fork", force=True)
+    except RuntimeError:
+        pass  # Already set
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -446,25 +454,34 @@ def _parallel_book_court(
     # Re-configure logging for this process with flush to ensure output is visible
     label = worker_id or court_name[-2:]
 
-    # Create handler that flushes immediately
-    handler = logging.StreamHandler(sys.stdout)
+    # Create a custom handler that flushes after every message
+    class FlushingStreamHandler(logging.StreamHandler):
+        def emit(self, record):
+            super().emit(record)
+            self.flush()
+
+    handler = FlushingStreamHandler(sys.stdout)
     handler.setFormatter(logging.Formatter(f'%(asctime)s [{label}] %(message)s', datefmt='%H:%M:%S'))
 
-    logging.basicConfig(
-        level=logging.INFO,
-        handlers=[handler],
-        force=True
-    )
+    # Clear existing handlers and set up fresh logging
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(logging.INFO)
+
     worker_log = logging.getLogger(__name__)
 
     # Force unbuffered output for this process
     sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
 
     try:
-        worker_log.info(f"Starting worker for {court_name} (click offset: {click_offset_ms:+d}ms)")
+        # Court names are like "Pickleball Court 5C (Bubble B)" - extract the 3rd word
+        court_short = court_name.split()[2]  # Gets "5C", "6A", "#7A", etc.
 
-        # Set trace label for this worker (e.g., "Court5C_-1000ms")
-        court_short = court_name.split()[-2] if "(" in court_name else court_name.split()[-1]
+        worker_log.info(f"Starting: Court {court_short}, click at {click_offset_ms:+d}ms")
+
+        # Set trace label for this worker (e.g., "5C_-1000ms")
         trace_label = f"{court_short}_{click_offset_ms:+d}ms"
         set_trace_label(trace_label)
 
@@ -485,22 +502,31 @@ def _parallel_book_court(
         click_disclosure()
         add_duration(duration)
 
-        worker_log.info(f"Form filled, will click at {actual_click_time.strftime('%H:%M:%S.%f')[:-3]}")
+        worker_log.info(f"Form ready for {court_short}, clicking at {actual_click_time.strftime('%H:%M:%S.%f')[:-3]}")
 
         # Wait and click Save (using custom click time, not the default -2s early)
         booking_succeeded = _click_save_at_time(actual_click_time)
 
         if booking_succeeded:
-            worker_log.info("SUCCESS!")
-            result_queue.put({"court": court_name, "worker_id": worker_id, "success": True})
+            worker_log.info("=" * 40)
+            worker_log.info(f"✓✓✓ SUCCESS - BOOKED {court_short} ✓✓✓")
+            worker_log.info("=" * 40)
+            result_queue.put({"court": court_name, "court_short": court_short, "worker_id": worker_id, "success": True})
         else:
-            worker_log.warning("Booking failed")
-            result_queue.put({"court": court_name, "worker_id": worker_id, "success": False, "error": "Booking failed"})
+            worker_log.warning("=" * 40)
+            worker_log.warning(f"✗✗✗ FAILED - {court_short} ✗✗✗")
+            worker_log.warning("=" * 40)
+            result_queue.put({"court": court_name, "court_short": court_short, "worker_id": worker_id, "success": False, "error": "Booking failed"})
 
     except Exception as e:
-        worker_log.error(f"Worker error: {e}")
+        worker_log.error("=" * 40)
+        worker_log.error(f"✗✗✗ ERROR - {e} ✗✗✗")
+        worker_log.error("=" * 40)
         result_queue.put({"court": court_name, "worker_id": worker_id, "success": False, "error": str(e)})
     finally:
+        # Ensure all output is flushed before process exits
+        sys.stdout.flush()
+        sys.stderr.flush()
         try:
             close_browser()
         except:
@@ -598,8 +624,10 @@ def _run_parallel_booking(
 
     # Spawn processes for each court × attempt combination
     for court_name in courts:
+        # Extract court short name (e.g., "5C" from "Pickleball Court 5C (Bubble B)")
+        court_short = court_name.split()[2]
         for attempt_idx, offset_ms in enumerate(offsets_ms):
-            worker_id = f"{court_name[-2:]}-{attempt_idx+1}"
+            worker_id = f"{court_short}@{offset_ms:+d}ms"
             p = multiprocessing.Process(
                 target=_parallel_book_court,
                 args=(court_name, booking_date, reservation_time, end_time, duration, target_time, result_queue),
@@ -607,7 +635,7 @@ def _run_parallel_booking(
             )
             processes.append((worker_id, p))
             p.start()
-            log.info(f"Started {worker_id} (offset: {offset_ms:+d}ms)")
+            log.info(f"  Started worker: {worker_id}")
 
     # Wait for all processes to complete (with timeout)
     timeout = 120  # 2 minutes max
@@ -628,25 +656,45 @@ def _run_parallel_booking(
     failures = [r for r in results if not r.get("success")]
 
     log.info("")
-    log.info("=" * 50)
+    log.info("=" * 60)
     log.info("PARALLEL BOOKING RESULTS")
-    log.info("=" * 50)
+    log.info("=" * 60)
 
-    for r in successes:
-        worker = r.get('worker_id', '')
-        log.info(f"  ✓ {r['court']} ({worker}): SUCCESS")
-    for r in failures:
-        worker = r.get('worker_id', '')
-        log.info(f"  ✗ {r['court']} ({worker}): {r.get('error', 'Failed')}")
+    if successes:
+        log.info("")
+        log.info("  ✓ SUCCESSFUL BOOKINGS:")
+        for r in successes:
+            court_short = r.get('court_short', r['court'].split()[2])
+            log.info(f"     ✓ {court_short} ({r.get('worker_id', '')})")
+
+    if failures:
+        log.info("")
+        log.info("  ✗ FAILED ATTEMPTS:")
+        for r in failures:
+            court_short = r.get('court_short', r.get('court', 'Unknown').split()[2] if r.get('court') else '?')
+            error_short = r.get('error', 'Failed')[:50]
+            log.info(f"     ✗ {r.get('worker_id', court_short)}: {error_short}")
+
+    log.info("")
+    log.info(f"  Summary: {len(successes)} succeeded, {len(failures)} failed out of {total_processes} attempts")
+    log.info("=" * 60)
+
+    # Flush to ensure summary is captured
+    sys.stdout.flush()
 
     if successes:
         # Notify about the first successful booking
         first_success = successes[0]
-        log.info(f"\nBooked court: {first_success['court']}")
+        court_short = first_success.get('court_short', first_success['court'].split()[2])
+        log.info("")
+        log.info(f"🎉 BOOKED: {first_success['court']}")
+        sys.stdout.flush()
         notify_success(first_success['court'], booking_date_str, reservation_time, duration)
         return True
     else:
-        log.error("\nAll parallel booking attempts failed!")
+        log.error("")
+        log.error("❌ ALL PARALLEL BOOKING ATTEMPTS FAILED!")
+        sys.stdout.flush()
         notify_failure(f"Parallel booking failed for {reservation_time} - all {total_processes} attempts failed")
         return False
 

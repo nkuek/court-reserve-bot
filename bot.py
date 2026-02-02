@@ -1163,24 +1163,33 @@ class FullLogView(discord.ui.View):
 
         # Upload to 0x0.st for a simple public link (do not use for secrets)
         upload_url = None
-        try:
-            form = aiohttp.FormData()
-            form.add_field(
-                "file",
-                self.full_log.encode("utf-8"),
-                filename=filename,
-                content_type="text/plain",
-            )
-            async with aiohttp.ClientSession() as session:
-                async with session.post("https://0x0.st", data=form, timeout=30) as resp:
-                    if resp.status == 200:
-                        upload_url = (await resp.text()).strip()
-        except Exception:
-            upload_url = None
+        upload_error = None
+        if self.full_log and len(self.full_log.strip()) > 0:
+            try:
+                form = aiohttp.FormData()
+                form.add_field(
+                    "file",
+                    self.full_log.encode("utf-8"),
+                    filename=filename,
+                    content_type="text/plain",
+                )
+                async with aiohttp.ClientSession() as session:
+                    async with session.post("https://0x0.st", data=form, timeout=30) as resp:
+                        if resp.status == 200:
+                            upload_url = (await resp.text()).strip()
+                            log.info(f"Log uploaded to 0x0.st: {upload_url}")
+                        else:
+                            upload_error = f"HTTP {resp.status}"
+                            log.warning(f"0x0.st upload failed: {upload_error}")
+            except Exception as e:
+                upload_error = str(e)
+                log.warning(f"0x0.st upload failed: {e}")
 
         content = f"📜 **Full log for {self.task_name}:**"
         if upload_url:
-            content += f"\n{upload_url}"
+            content += f"\n🔗 {upload_url}"
+        elif upload_error:
+            content += f"\n⚠️ Upload failed: {upload_error}"
 
         # Always include the file attachment so the log is never empty for the user
         file = None
