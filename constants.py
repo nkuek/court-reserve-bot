@@ -12,7 +12,7 @@ BACKEND_URL = "https://backend.courtreserve.com"
 
 # Organization-specific IDs
 ORG_ID = "8449"
-SCHEDULE_ID = "18493"
+SCHEDULE_ID = "32125"
 
 # Valid duration options for bookings (in hours)
 VALID_DURATIONS = [1.0, 1.5, 2.0, 2.5, 3.0]
