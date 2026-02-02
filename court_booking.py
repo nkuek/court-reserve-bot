@@ -337,6 +337,16 @@ def check_court_availability(court: str, reservation_time: str, end_time: str):
     log.info(f"Checking court: {court} for {reservation_time}")
     page = get_page()
 
+    # Scroll scheduler viewport to ensure time slots below the fold are rendered
+    try:
+        scheduler = page.locator(".k-scheduler-content")
+        scheduler.wait_for(timeout=5000)
+        for frac in (0.0, 0.5, 1.0):
+            scheduler.evaluate("el => { el.scrollTop = el.scrollHeight * %s; }" % frac)
+            page.wait_for_timeout(150)
+    except Exception as e:
+        log.debug(f"  Scheduler scroll skipped: {e}")
+
     # Use exact text match with 'Reserve X:XX PM' to avoid partial matches
     # e.g., '2:00 PM' would otherwise match '12:00 PM'
     try:

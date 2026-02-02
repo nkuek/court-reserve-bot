@@ -65,6 +65,18 @@ def get_available_slots() -> dict[str, list[str]]:
         # Fallback to brief wait only if selector fails
         page.wait_for_timeout(1000)
 
+    # Scroll the scheduler viewport to force lazy-loaded time slots to render
+    try:
+        scheduler = page.locator(".k-scheduler-content")
+        scheduler.wait_for(timeout=5000)
+        # Scroll in a few passes (top, mid, bottom) to trigger virtualized rows
+        heights = [0.0, 0.5, 1.0]
+        for frac in heights:
+            scheduler.evaluate("el => { el.scrollTop = el.scrollHeight * %s; }" % frac)
+            page.wait_for_timeout(200)
+    except Exception as e:
+        log.debug(f"  Scheduler scroll skipped: {e}")
+
     # Find available slot buttons
     # Available slots have the "slot-btn" class WITHOUT the "hide" class
     # Reserved slots have buttons with the "hide" class (should be excluded)
