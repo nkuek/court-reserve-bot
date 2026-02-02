@@ -1161,29 +1161,54 @@ class FullLogView(discord.ui.View):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"log_{timestamp}.txt"
 
-        # Upload to 0x0.st for a simple public link (do not use for secrets)
+        # Upload to paste service for a simple public link
         upload_url = None
         upload_error = None
         if self.full_log and len(self.full_log.strip()) > 0:
-            try:
-                form = aiohttp.FormData()
-                form.add_field(
-                    "file",
-                    self.full_log.encode("utf-8"),
-                    filename=filename,
-                    content_type="text/plain",
-                )
-                async with aiohttp.ClientSession() as session:
-                    async with session.post("https://0x0.st", data=form, timeout=30) as resp:
-                        if resp.status == 200:
-                            upload_url = (await resp.text()).strip()
-                            log.info(f"Log uploaded to 0x0.st: {upload_url}")
+            # Try multiple paste services in order of preference
+            paste_services = [
+                ("https://paste.rs/", "text/plain", lambda r: r if r.startswith("http") else None),
+                ("https://dpaste.org/api/", "application/x-www-form-urlencoded", lambda r: f"https://dpaste.org{r.strip()}" if r.strip().startswith("/") else None),
+            ]
+
+            for service_url, content_type, parse_response in paste_services:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        headers = {"User-Agent": "CourtBookingBot/1.0"}
+
+                        if "paste.rs" in service_url:
+                            # paste.rs accepts raw text body
+                            async with session.post(
+                                service_url,
+                                data=self.full_log.encode("utf-8"),
+                                headers={**headers, "Content-Type": "text/plain"},
+                                timeout=aiohttp.ClientTimeout(total=15)
+                            ) as resp:
+                                if resp.status in (200, 201):
+                                    result = (await resp.text()).strip()
+                                    upload_url = parse_response(result)
                         else:
-                            upload_error = f"HTTP {resp.status}"
-                            log.warning(f"0x0.st upload failed: {upload_error}")
-            except Exception as e:
-                upload_error = str(e)
-                log.warning(f"0x0.st upload failed: {e}")
+                            # dpaste.org uses form data
+                            form_data = {"content": self.full_log, "syntax": "text", "expiry_days": 7}
+                            async with session.post(
+                                service_url,
+                                data=form_data,
+                                headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=15)
+                            ) as resp:
+                                if resp.status in (200, 201):
+                                    result = (await resp.text()).strip()
+                                    upload_url = parse_response(result)
+
+                        if upload_url:
+                            log.info(f"Log uploaded to {service_url}: {upload_url}")
+                            break
+                except Exception as e:
+                    log.warning(f"Paste upload to {service_url} failed: {e}")
+                    continue
+
+            if not upload_url:
+                upload_error = "All paste services failed"
 
         content = f"📜 **Full log for {self.task_name}:**"
         if upload_url:
