@@ -1515,6 +1515,7 @@ async def check_availability(
         status_message = None
 
         async def read_output():
+            """Collect output lines without blocking the event loop."""
             while True:
                 line = await process.stdout.readline()
                 if not line:
@@ -1522,7 +1523,6 @@ async def check_availability(
                 decoded = line.decode().strip()
                 if decoded:
                     output_lines.append(decoded)
-                    log.info(f"[Check Availability] {decoded}")
 
         # Start reading output
         read_task = asyncio.create_task(read_output())
@@ -2910,7 +2910,7 @@ async def run_scheduled_script(cmd: list[str], task_name: str, discord_id: int, 
         ) if user else None
 
         async def read_output():
-            """Read output line by line."""
+            """Collect output lines without blocking the event loop."""
             while True:
                 line = await process.stdout.readline()
                 if not line:
@@ -2918,7 +2918,6 @@ async def run_scheduled_script(cmd: list[str], task_name: str, discord_id: int, 
                 decoded = line.decode().strip()
                 if decoded:
                     output_lines.append(decoded)
-                    log.info(f"[{task_name}] {decoded}")
 
         # Start reading output
         read_task = asyncio.create_task(read_output())
@@ -3097,7 +3096,7 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
         )
 
         async def read_output():
-            """Read output line by line."""
+            """Collect output lines without blocking the event loop."""
             while True:
                 line = await process.stdout.readline()
                 if not line:
@@ -3105,7 +3104,6 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
                 decoded = line.decode().strip()
                 if decoded:
                     output_lines.append(decoded)
-                    log.info(f"[{task_name}] {decoded}")
 
         # Start reading output
         read_task = asyncio.create_task(read_output())
