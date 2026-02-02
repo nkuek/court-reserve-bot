@@ -77,8 +77,8 @@ def _save_debug_snapshot(suffix: str):
         html_path = None
 
     # Clean up old debug files (keep last 20 of each type)
-    for ext in ["*.png", "*.html"]:
-        files = sorted(debug_dir.glob(f"openplay_*{ext}"), key=os.path.getmtime)
+    for pattern in ["openplay_*.png", "openplay_*.html"]:
+        files = sorted(debug_dir.glob(pattern), key=os.path.getmtime)
         for old_file in files[:-20]:
             try:
                 os.remove(old_file)

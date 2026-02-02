@@ -32,6 +32,13 @@ _context: BrowserContext | None = None
 _page: Page | None = None
 _tracing_active: bool = False
 _trace_path: Path | None = None
+_trace_label: str | None = None
+
+
+def set_trace_label(label: str):
+    """Set a custom label for the trace file (call before login)."""
+    global _trace_label
+    _trace_label = label
 
 
 def _init_playwright():
@@ -97,7 +104,7 @@ def get_page() -> Page:
 
 def start_tracing_if_enabled():
     """Start tracing after login to avoid capturing credentials."""
-    global _tracing_active, _trace_path
+    global _tracing_active, _trace_path, _trace_label
 
     if _tracing_active:
         return
@@ -107,8 +114,15 @@ def start_tracing_if_enabled():
         trace_dir = Path(__file__).parent / "data" / "traces"
         trace_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        pid = os.getpid()
-        _trace_path = trace_dir / f"trace_{timestamp}_{pid}.zip"
+
+        # Use custom label if set, otherwise fall back to PID
+        if _trace_label:
+            # Sanitize label for filename (replace spaces and special chars)
+            safe_label = _trace_label.replace(" ", "_").replace("(", "").replace(")", "").replace("/", "-")
+            _trace_path = trace_dir / f"trace_{timestamp}_{safe_label}.zip"
+        else:
+            pid = os.getpid()
+            _trace_path = trace_dir / f"trace_{timestamp}_{pid}.zip"
 
         context.tracing.start(
             screenshots=True,

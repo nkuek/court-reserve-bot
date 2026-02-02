@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 
 from constants import (
     get_page, close_browser, COURTS, VALID_DURATIONS,
-    FACILITY_CLOSING_HOUR, FACILITY_CLOSING_MINUTE
+    FACILITY_CLOSING_HOUR, FACILITY_CLOSING_MINUTE, set_trace_label
 )
 from utils.login import login
 from utils.booking_date import select_booking_date, parse_booking_date
@@ -463,6 +463,11 @@ def _parallel_book_court(
     try:
         worker_log.info(f"Starting worker for {court_name} (click offset: {click_offset_ms:+d}ms)")
 
+        # Set trace label for this worker (e.g., "Court5C_-1000ms")
+        court_short = court_name.split()[-2] if "(" in court_name else court_name.split()[-1]
+        trace_label = f"{court_short}_{click_offset_ms:+d}ms"
+        set_trace_label(trace_label)
+
         # Each process needs its own browser
         login()
         select_booking_date(booking_date)
@@ -576,15 +581,15 @@ def _run_parallel_booking(
     log.info(f"  Total processes: {total_processes}")
     log.info("=" * 50)
 
-    # Fixed stagger: -750ms, -500ms, -250ms, 0ms (min 4 attempts per court). Extra attempts also at 0ms.
+    # Fixed stagger: -1000ms, -750ms, -500ms, -250ms, 0ms (min 4 attempts per court). Extra attempts also at 0ms.
     if attempts_per_court <= 1:
         offsets_ms = [0]
     else:
-        base_offsets = [-750, -500, -250, 0]
-        if attempts_per_court <= 4:
+        base_offsets = [-1000, -750, -500, -250, 0]
+        if attempts_per_court <= 5:
             offsets_ms = base_offsets[:attempts_per_court]
         else:
-            offsets_ms = base_offsets + [0] * (attempts_per_court - 4)
+            offsets_ms = base_offsets + [0] * (attempts_per_court - 5)
 
     log.info(f"  Click offsets: {offsets_ms} ms")
 
@@ -703,7 +708,7 @@ def main(
         int,
         typer.Option(
             "--attempts", "-a",
-            help="Number of parallel attempts per court with staggered timing (requires --parallel). e.g., 4 = clicks at -2s, -1.5s, -1s, -0.5s",
+            help="Number of parallel attempts per court with staggered timing (requires --parallel). e.g., 5 = clicks at -1s, -750ms, -500ms, -250ms, 0ms",
         ),
     ] = 3,
     email: Annotated[
@@ -846,16 +851,16 @@ def main(
     # Activate if --parallel flag set AND (multiple courts OR multiple attempts per court)
     log.info(f"Parallel mode check: parallel={parallel}, courts={len(courts_to_try)}, attempts={attempts}")
     if parallel and (len(courts_to_try) > 1 or attempts > 1):
-        # Ensure at least 4 processes per court
-        attempts_per_court = max(4, attempts)
+        # Ensure at least 5 processes per court (for all stagger offsets: -1s, -750ms, -500ms, -250ms, 0ms)
+        attempts_per_court = max(5, attempts)
 
         # Strategy:
         # - If multiple courts are available: spread attempts across all courts with min 2 per court
         # - If only one court: stack attempts on that court (use --attempts, min 2)
         if len(courts_to_try) > 1:
-            log.info(f"Multiple courts available ({len(courts_to_try)}). Spreading processes: {attempts_per_court} attempt(s) per court (min 2).")
+            log.info(f"Multiple courts available ({len(courts_to_try)}). Spreading processes: {attempts_per_court} attempt(s) per court (min 5).")
         else:
-            log.info(f"Single court available. Using {attempts_per_court} attempt(s) on the same court (min 2).")
+            log.info(f"Single court available. Using {attempts_per_court} attempt(s) on the same court (min 5).")
 
         # Close the current browser - parallel processes will create their own
         close_browser()
