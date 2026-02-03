@@ -84,6 +84,84 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_USER_IDS
 
 
+async def upload_log_to_paste(log_content: str) -> str | None:
+    """Upload log content to a paste service and return the URL."""
+    if not log_content or not log_content.strip():
+        return None
+
+    paste_services = [
+        ("https://paste.rs/", lambda r: r if r.startswith("http") else None),
+        ("https://dpaste.org/api/", lambda r: f"https://dpaste.org{r.strip()}" if r.strip().startswith("/") else None),
+    ]
+
+    for service_url, parse_response in paste_services:
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {"User-Agent": "CourtBookingBot/1.0"}
+
+                if "paste.rs" in service_url:
+                    async with session.post(
+                        service_url,
+                        data=log_content.encode("utf-8"),
+                        headers={**headers, "Content-Type": "text/plain"},
+                        timeout=aiohttp.ClientTimeout(total=15)
+                    ) as resp:
+                        if resp.status in (200, 201):
+                            result = (await resp.text()).strip()
+                            url = parse_response(result)
+                            if url:
+                                return url
+                else:
+                    form_data = {"content": log_content, "syntax": "text", "expiry_days": 7}
+                    async with session.post(
+                        service_url,
+                        data=form_data,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=15)
+                    ) as resp:
+                        if resp.status in (200, 201):
+                            result = (await resp.text()).strip()
+                            url = parse_response(result)
+                            if url:
+                                return url
+        except Exception as e:
+            log.warning(f"Paste upload to {service_url} failed: {e}")
+            continue
+
+    return None
+
+
+async def notify_admins_with_log(
+    task_name: str,
+    user_id: int,
+    success: bool,
+    log_url: str | None,
+    schedule_id: int | None = None,
+):
+    """DM all admin users with the log link for a completed task."""
+    if not log_url:
+        return
+
+    status = "✅ SUCCESS" if success else "❌ FAILED"
+    schedule_info = f" (Schedule #{schedule_id})" if schedule_id else ""
+
+    message = (
+        f"📋 **Task Log** - {status}\n"
+        f"**Task:** {task_name}{schedule_info}\n"
+        f"**User:** <@{user_id}>\n"
+        f"🔗 {log_url}"
+    )
+
+    for admin_id in ADMIN_USER_IDS:
+        if admin_id == user_id:
+            continue  # Don't double-notify if admin ran the task
+        try:
+            admin_user = await client.fetch_user(admin_id)
+            await admin_user.send(message)
+        except Exception as e:
+            log.warning(f"Could not DM admin {admin_id}: {e}")
+
+
 # Available courts with short names for UI (matching court_booking.py)
 COURTS = [
     ("5A", "Pickleball Court 5A (Bubble B)"),
@@ -1210,9 +1288,24 @@ class FullLogView(discord.ui.View):
             if not upload_url:
                 upload_error = "All paste services failed"
 
+        # Send DM with paste link so it's not ephemeral
+        if upload_url:
+            try:
+                await interaction.user.send(
+                    f"📜 **Full log for {self.task_name}:**\n🔗 {upload_url}"
+                )
+                dm_sent = True
+            except discord.Forbidden:
+                dm_sent = False
+        else:
+            dm_sent = False
+
+        # Build ephemeral response content
         content = f"📜 **Full log for {self.task_name}:**"
         if upload_url:
             content += f"\n🔗 {upload_url}"
+            if dm_sent:
+                content += "\n✅ Link also sent to your DMs"
         elif upload_error:
             content += f"\n⚠️ Upload failed: {upload_error}"
 
@@ -1515,7 +1608,8 @@ async def check_availability(
         status_message = None
 
         async def read_output():
-            """Collect output lines without blocking the event loop."""
+            """Collect output lines, logging periodically to avoid blocking heartbeats."""
+            line_count = 0
             while True:
                 line = await process.stdout.readline()
                 if not line:
@@ -1523,6 +1617,11 @@ async def check_availability(
                 decoded = line.decode().strip()
                 if decoded:
                     output_lines.append(decoded)
+                    line_count += 1
+                    # Log every 20 lines to reduce I/O blocking
+                    if line_count % 20 == 0:
+                        log.info(f"[{task_name}] ... {line_count} lines collected ...")
+                        await asyncio.sleep(0)  # Yield to event loop
 
         # Start reading output
         read_task = asyncio.create_task(read_output())
@@ -2910,7 +3009,8 @@ async def run_scheduled_script(cmd: list[str], task_name: str, discord_id: int, 
         ) if user else None
 
         async def read_output():
-            """Collect output lines without blocking the event loop."""
+            """Collect output lines, logging periodically to avoid blocking heartbeats."""
+            line_count = 0
             while True:
                 line = await process.stdout.readline()
                 if not line:
@@ -2918,6 +3018,11 @@ async def run_scheduled_script(cmd: list[str], task_name: str, discord_id: int, 
                 decoded = line.decode().strip()
                 if decoded:
                     output_lines.append(decoded)
+                    line_count += 1
+                    # Log every 20 lines to reduce I/O blocking
+                    if line_count % 20 == 0:
+                        log.info(f"[{task_name}] ... {line_count} lines collected ...")
+                        await asyncio.sleep(0)  # Yield to event loop
 
         # Start reading output
         read_task = asyncio.create_task(read_output())
@@ -3023,10 +3128,15 @@ async def run_scheduled_script(cmd: list[str], task_name: str, discord_id: int, 
                     inline=False,
                 )
 
+            # Upload log to paste service
+            log_url = await upload_log_to_paste(output)
+
             # Add log preview and full log button
             view = FullLogView(output, task_name) if output else None
 
-            if len(output) <= 800:
+            if log_url:
+                embed.add_field(name="📜 Full Log", value=f"🔗 {log_url}", inline=False)
+            elif len(output) <= 800:
                 embed.add_field(name="📜 Full Log", value=f"```\n{output}\n```", inline=False)
                 view = None
             elif len(output) <= 1500:
@@ -3038,6 +3148,15 @@ async def run_scheduled_script(cmd: list[str], task_name: str, discord_id: int, 
                 await user.send(embed=embed, view=view)
             except:
                 log.warning(f"Could not DM user {discord_id} with scheduled task result")
+
+            # Notify admin users with the log link
+            await notify_admins_with_log(
+                task_name=task_name,
+                user_id=discord_id,
+                success=(process.returncode == 0),
+                log_url=log_url,
+                schedule_id=schedule_id,
+            )
 
     except Exception as e:
         log.error(f"Error running scheduled script: {e}")
@@ -3096,7 +3215,8 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
         )
 
         async def read_output():
-            """Collect output lines without blocking the event loop."""
+            """Collect output lines, logging periodically to avoid blocking heartbeats."""
+            line_count = 0
             while True:
                 line = await process.stdout.readline()
                 if not line:
@@ -3104,6 +3224,11 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
                 decoded = line.decode().strip()
                 if decoded:
                     output_lines.append(decoded)
+                    line_count += 1
+                    # Log every 20 lines to reduce I/O blocking
+                    if line_count % 20 == 0:
+                        log.info(f"[{task_name}] ... {line_count} lines collected ...")
+                        await asyncio.sleep(0)  # Yield to event loop
 
         # Start reading output
         read_task = asyncio.create_task(read_output())
@@ -3233,10 +3358,15 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
             )
             embed.set_footer(text="Need help? Check the logs above for more details.")
 
+        # Upload log to paste service
+        log_url = await upload_log_to_paste(output)
+
         # Add log preview and full log button
         view = FullLogView(output, task_name) if output else None
 
-        if len(output) <= 800:
+        if log_url:
+            embed.add_field(name="📜 Full Log", value=f"🔗 {log_url}", inline=False)
+        elif len(output) <= 800:
             embed.add_field(name="📜 Full Log", value=f"```\n{output}\n```", inline=False)
             view = None  # No need for button if log fits
         elif len(output) <= 1500:
@@ -3256,6 +3386,14 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
                 embed=embed,
                 view=view,
             )
+
+        # Notify admin users with the log link
+        await notify_admins_with_log(
+            task_name=task_name,
+            user_id=user_id,
+            success=(process.returncode == 0),
+            log_url=log_url,
+        )
 
     except Exception as e:
         log.error(f"Error running script: {e}")

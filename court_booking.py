@@ -90,11 +90,6 @@ def to_12_hour(time_str: str | datetime) -> str:
     return dt.strftime("%-I:%M %p")  # e.g., "9:00 PM"
 
 
-def duration_to_index(hours: float) -> int:
-    """Convert duration hours to dropdown index (0-indexed)."""
-    return VALID_DURATIONS.index(hours)
-
-
 def add_players():
     """Add 3 placeholder players to the reservation."""
     log.info("Adding placeholder players...")
@@ -130,25 +125,75 @@ def click_disclosure():
     log.info("Disclosure accepted")
 
 
-def add_duration(duration_hours: float):
-    """Set the reservation duration (optimized for speed)."""
+def add_duration(duration_hours: float) -> float:
+    """Set the reservation duration by selecting the matching text option.
+
+    Returns the actual duration that was selected (may be less than requested
+    if the time slot doesn't support longer durations).
+    """
     log.info(f"Setting duration to {duration_hours} hours...")
     page = get_page()
+
+    # Map duration values to dropdown text
+    duration_text_map = {
+        1.0: "1 hour",
+        1.5: "1 hour & 30 minutes",
+        2.0: "2 hours",
+        2.5: "2 hours & 30 minutes",
+        3.0: "3 hours",
+    }
+
+    # Fallback order: if requested duration isn't available, try shorter ones
+    fallback_options = {
+        3.0: [2.5, 2.0],
+        2.5: [2.0],
+    }
+
+    target_text = duration_text_map.get(duration_hours)
+    if not target_text:
+        raise ValueError(f"Unknown duration: {duration_hours}. Valid options: {list(duration_text_map.keys())}")
 
     duration_input = page.locator("span[aria-owns='Duration_listbox']")
     duration_input.wait_for(timeout=3000)
     duration_input.click()
 
-    # Wait for dropdown to open - shorter timeout
+    # Wait for dropdown to open
     dropdown_list = page.locator('ul[data-testid="Duration-container"][aria-hidden="false"]')
     dropdown_list.wait_for(timeout=2000)
 
-    # Click directly on the duration item instead of using slow arrow key navigation
-    duration_index = duration_to_index(duration_hours)
-    duration_item = dropdown_list.locator("li").nth(duration_index)
+    # Try to find the requested duration
+    duration_item = dropdown_list.locator(f"li:has-text('{target_text}')")
+    actual_duration = duration_hours
+
+    # Check if the requested option exists
+    if duration_item.count() == 0:
+        # Try fallback options
+        fallbacks = fallback_options.get(duration_hours, [])
+        found_fallback = False
+
+        for fallback_duration in fallbacks:
+            fallback_text = duration_text_map[fallback_duration]
+            fallback_item = dropdown_list.locator(f"li:has-text('{fallback_text}')")
+
+            if fallback_item.count() > 0:
+                log.warning(f"⚠️ {target_text} not available for this time slot!")
+                log.warning(f"⚠️ Falling back to {fallback_text}")
+                duration_item = fallback_item
+                actual_duration = fallback_duration
+                found_fallback = True
+                break
+
+        if not found_fallback:
+            raise ValueError(f"Duration '{target_text}' not available and no fallback found")
+
     duration_item.click()
 
-    log.info(f"Duration set to {duration_hours} hours")
+    if actual_duration != duration_hours:
+        log.info(f"Duration set to {actual_duration} hours ({duration_text_map[actual_duration]}) - reduced from {duration_hours}h")
+    else:
+        log.info(f"Duration set to {duration_hours} hours ({target_text})")
+
+    return actual_duration
 
 
 def _save_debug_snapshot(suffix: str):
@@ -500,7 +545,7 @@ def _parallel_book_court(
         # Fill the form
         add_players()
         click_disclosure()
-        add_duration(duration)
+        actual_duration = add_duration(duration)
 
         worker_log.info(f"Form ready for {court_short}, clicking at {actual_click_time.strftime('%H:%M:%S.%f')[:-3]}")
 
@@ -511,7 +556,7 @@ def _parallel_book_court(
             worker_log.info("=" * 40)
             worker_log.info(f"✓✓✓ SUCCESS - BOOKED {court_short} ✓✓✓")
             worker_log.info("=" * 40)
-            result_queue.put({"court": court_name, "court_short": court_short, "worker_id": worker_id, "success": True})
+            result_queue.put({"court": court_name, "court_short": court_short, "worker_id": worker_id, "success": True, "actual_duration": actual_duration})
         else:
             worker_log.warning("=" * 40)
             worker_log.warning(f"✗✗✗ FAILED - {court_short} ✗✗✗")
@@ -686,10 +731,14 @@ def _run_parallel_booking(
         # Notify about the first successful booking
         first_success = successes[0]
         court_short = first_success.get('court_short', first_success['court'].split()[2])
+        # Use actual duration from the booking (may have been reduced)
+        actual_duration = first_success.get('actual_duration', duration)
         log.info("")
         log.info(f"🎉 BOOKED: {first_success['court']}")
+        if actual_duration != duration:
+            log.warning(f"⚠️ Duration was reduced from {duration}h to {actual_duration}h (max available for this time slot)")
         sys.stdout.flush()
-        notify_success(first_success['court'], booking_date_str, reservation_time, duration)
+        notify_success(first_success['court'], booking_date_str, reservation_time, actual_duration)
         return True
     else:
         log.error("")
@@ -940,7 +989,7 @@ def main(
 
             add_players()
             click_disclosure()
-            add_duration(duration)
+            actual_duration = add_duration(duration)
 
             booking_succeeded = click_save_button(target)
 
@@ -976,8 +1025,8 @@ def main(
             log.info(f"SUCCESS! Reservation saved on court: {court_name}")
             log.info("=" * 50)
 
-            # Send Discord notification
-            notify_success(court_name, booking_date_str, reservation_time, duration)
+            # Send Discord notification (use actual duration in case it was reduced)
+            notify_success(court_name, booking_date_str, reservation_time, actual_duration)
 
             # If we got here without throwing, we consider it a success and stop
             break
