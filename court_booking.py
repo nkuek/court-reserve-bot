@@ -34,14 +34,6 @@ from utils.wait import wait_until, parse_wait_time
 # Load .env from the same directory as this script
 load_dotenv(Path(__file__).parent / ".env")
 
-# Set multiprocessing start method to 'fork' on Unix for proper stdout inheritance
-# On macOS, the default 'spawn' doesn't inherit file descriptors properly
-if sys.platform != "win32":
-    try:
-        multiprocessing.set_start_method("fork", force=True)
-    except RuntimeError:
-        pass  # Already set
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -770,7 +762,7 @@ def main(
         str | None,
         typer.Option(
             "--wait-until", "-w",
-            help="Wait until this time before starting. Formats: 07:00, tomorrow 07:00, +1d 07:00, 2025-12-14 07:00. Default: 1 minute before reservation time.",
+            help="Wait until this time before starting. Formats: 07:00, tomorrow 07:00, +1d 07:00, 2025-12-14 07:00. Default: 2 minutes before reservation time.",
         ),
     ] = None,
     no_wait: Annotated[
@@ -849,8 +841,8 @@ def main(
             except ValueError as e:
                 raise typer.BadParameter(str(e))
         else:
-            # Default: wait until 1 minute before target time
-            default_wait_target = target_click_time - timedelta(minutes=1)
+            # Default: wait until 2 minutes before target time
+            default_wait_target = target_click_time - timedelta(minutes=2)
             if default_wait_target > datetime.now():
                 wait_target = default_wait_target
 
@@ -919,10 +911,10 @@ def main(
         if wait_until_time:
             log.info(f"Waiting until {wait_target.strftime('%H:%M:%S')} before scanning courts...")
         else:
-            log.info(f"Default behavior: waiting until 1 minute before {target_click_time.strftime('%H:%M:%S')}")
+            log.info(f"Default behavior: waiting until 2 minutes before {target_click_time.strftime('%H:%M:%S')}")
         wait_until(wait_target)
     else:
-        log.info("Target time is less than 1 minute away, proceeding immediately")
+        log.info("Target time is less than 2 minutes away, proceeding immediately")
 
     # Scan for available courts first (only try courts that are actually available)
     if court:
