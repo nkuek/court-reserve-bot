@@ -85,76 +85,62 @@ def is_admin(user_id: int) -> bool:
 
 
 async def upload_log_to_paste(log_content: str) -> str | None:
-    """Upload log content to a paste service and return the URL."""
+    """Upload log content to a paste service and return the URL.
+
+    Returns None silently if all services fail -- callers should
+    fall back to Discord file attachments.
+    """
     if not log_content or not log_content.strip():
-        log.warning("upload_log_to_paste: log content is empty, skipping")
         return None
 
-    # Try paste.rs first (simple raw text upload)
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://paste.rs/",
-                data=log_content.encode("utf-8"),
-                headers={"Content-Type": "text/plain", "User-Agent": "CourtBookingBot/1.0"},
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                result = (await resp.text()).strip()
-                if resp.status in (200, 201) and result.startswith("http"):
-                    log.info(f"Log uploaded to paste.rs: {result}")
+    services = [
+        ("https://paste.rs/", _upload_paste_rs),
+        ("https://dpaste.org/api/", _upload_dpaste),
+    ]
+
+    for name, upload_fn in services:
+        try:
+            url = await upload_fn(log_content)
+            if url:
+                log.info(f"Log uploaded to {name}: {url}")
+                return url
+        except Exception as e:
+            log.debug(f"Paste upload to {name} failed: {e}")
+
+    log.debug("No paste services available, using Discord file attachment")
+    return None
+
+
+async def _upload_paste_rs(log_content: str) -> str | None:
+    """Upload to paste.rs (raw text body)."""
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://paste.rs/",
+            data=log_content.encode("utf-8"),
+            headers={"Content-Type": "text/plain", "User-Agent": "CourtBookingBot/1.0"},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            result = (await resp.text()).strip()
+            if resp.status in (200, 201) and result.startswith("http"):
+                return result
+    return None
+
+
+async def _upload_dpaste(log_content: str) -> str | None:
+    """Upload to dpaste.org (form data)."""
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://dpaste.org/api/",
+            data={"content": log_content, "syntax": "text", "expiry_days": 7},
+            headers={"User-Agent": "CourtBookingBot/1.0"},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            result = (await resp.text()).strip()
+            if resp.status in (200, 201):
+                if result.startswith("http"):
                     return result
-                else:
-                    log.warning(f"paste.rs returned status={resp.status}, body={result[:200]}")
-    except Exception as e:
-        log.warning(f"paste.rs upload failed: {e}")
-
-    # Try dpaste.org as fallback
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://dpaste.org/api/",
-                data={"content": log_content, "syntax": "text", "expiry_days": 7},
-                headers={"User-Agent": "CourtBookingBot/1.0"},
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                result = (await resp.text()).strip()
-                if resp.status in (200, 201):
-                    # dpaste returns a path like "/abc123" or a full URL
-                    if result.startswith("http"):
-                        log.info(f"Log uploaded to dpaste.org: {result}")
-                        return result
-                    elif result.startswith("/"):
-                        url = f"https://dpaste.org{result}"
-                        log.info(f"Log uploaded to dpaste.org: {url}")
-                        return url
-                    else:
-                        log.warning(f"dpaste.org returned unexpected body: {result[:200]}")
-                else:
-                    log.warning(f"dpaste.org returned status={resp.status}, body={result[:200]}")
-    except Exception as e:
-        log.warning(f"dpaste.org upload failed: {e}")
-
-    # Try ix.io as last resort
-    try:
-        async with aiohttp.ClientSession() as session:
-            form = aiohttp.FormData()
-            form.add_field("f:1", log_content)
-            async with session.post(
-                "http://ix.io",
-                data=form,
-                headers={"User-Agent": "CourtBookingBot/1.0"},
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                result = (await resp.text()).strip()
-                if resp.status == 200 and result.startswith("http"):
-                    log.info(f"Log uploaded to ix.io: {result}")
-                    return result
-                else:
-                    log.warning(f"ix.io returned status={resp.status}, body={result[:200]}")
-    except Exception as e:
-        log.warning(f"ix.io upload failed: {e}")
-
-    log.error("All paste services failed")
+                elif result.startswith("/"):
+                    return f"https://dpaste.org{result}"
     return None
 
 
@@ -1261,45 +1247,51 @@ class FullLogView(discord.ui.View):
 
     @discord.ui.button(label="View Full Log", style=discord.ButtonStyle.secondary, emoji="📜")
     async def view_log(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Send the full log as a file attachment and paste link."""
+        """Send the full log as a DM (file attachment + paste link)."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"log_{timestamp}.txt"
 
-        # Upload to paste service
+        # Upload to paste service (best-effort)
         upload_url = await upload_log_to_paste(self.full_log)
 
-        # Send DM with paste link so it's not ephemeral
-        dm_sent = False
-        if upload_url:
-            try:
-                await interaction.user.send(
-                    f"📜 **Full log for {self.task_name}:**\n🔗 {upload_url}"
-                )
-                dm_sent = True
-            except discord.Forbidden:
-                pass
-
-        # Build ephemeral response content
+        # Build the DM content
         content = f"📜 **Full log for {self.task_name}:**"
         if upload_url:
             content += f"\n🔗 {upload_url}"
-            if dm_sent:
-                content += "\n✅ Link also sent to your DMs"
-        else:
-            content += "\n⚠️ Paste upload failed — log attached as file"
 
-        # Always include the file attachment
-        file = None
-        if self.full_log:
-            file = discord.File(
-                io.BytesIO(self.full_log.encode("utf-8")),
-                filename=filename,
+        # Send log as a DM (works on mobile, unlike ephemeral file attachments)
+        dm_sent = False
+        try:
+            file = None
+            if self.full_log:
+                file = discord.File(
+                    io.BytesIO(self.full_log.encode("utf-8")),
+                    filename=filename,
+                )
+            if file:
+                await interaction.user.send(content, file=file)
+            else:
+                await interaction.user.send(content + "\n(Log was empty.)")
+            dm_sent = True
+        except discord.Forbidden:
+            pass
+
+        # Acknowledge the button click
+        if dm_sent:
+            await interaction.response.send_message("📜 Log sent to your DMs!", ephemeral=True)
+        else:
+            # DMs disabled — fall back to ephemeral (won't show file on mobile)
+            file = None
+            if self.full_log:
+                file = discord.File(
+                    io.BytesIO(self.full_log.encode("utf-8")),
+                    filename=filename,
+                )
+            await interaction.response.send_message(
+                content + "\n⚠️ Couldn't DM you — enable DMs for file attachments on mobile",
+                file=file,
+                ephemeral=True,
             )
-
-        if file:
-            await interaction.response.send_message(content, file=file, ephemeral=True)
-        else:
-            await interaction.response.send_message(content + "\n(Log was empty.)", ephemeral=True)
 
         # Disable the button after use
         button.disabled = True
