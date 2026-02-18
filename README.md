@@ -5,6 +5,7 @@ Automated booking scripts for CourtReserve using Playwright. Book courts and reg
 ## Features
 
 - **Court Booking**: Automatically book pickleball courts with customizable time and duration
+- **Direct API Mode**: Fires HTTP POST requests directly at click time — no browser UI interaction needed during the booking race
 - **Open Play Registration**: Register for open play events
 - **Check Availability**: View available time slots for any date
 - **Date Selection**: Book for today, tomorrow, or up to 5 days in advance
@@ -74,24 +75,35 @@ HEADLESS=false
 ### Court Booking
 
 ```bash
-# Book a 2-hour slot at 9 PM, 5 days from now (latest available)
-# By default, waits until 1 minute before 9 PM to execute
-python court_booking.py --time 21:00 --duration 2
+# Book a 2-hour slot at 9 PM using direct API (recommended)
+# Waits until 2 minutes before 9 PM, then fires HTTP requests at 9 PM
+python court_booking.py --time 21:00 --duration 2 --direct
+
+# Dry run — verify the payload without actually booking
+python court_booking.py --time 21:00 --duration 2 --direct --no-wait --dry-run
 
 # Execute immediately (skip waiting)
-python court_booking.py --time 21:00 --duration 2 --no-wait
+python court_booking.py --time 21:00 --duration 2 --direct --no-wait
 
 # Book for a specific date
-python court_booking.py --time 21:00 --duration 2 --date 12/15 --no-wait
+python court_booking.py --time 21:00 --duration 2 --direct --date 12/15 --no-wait
 
 # Book for tomorrow
-python court_booking.py --time 21:00 --duration 2 --date tomorrow --no-wait
+python court_booking.py --time 21:00 --duration 2 --direct --date tomorrow --no-wait
 
 # Wait until a specific time (e.g., when booking window opens at 7 AM)
-python court_booking.py --time 21:00 --duration 2 --wait-until 07:00
+python court_booking.py --time 21:00 --duration 2 --direct --wait-until 07:00
+
+# Parallel browser mode (legacy — uses multiple Chrome instances)
+python court_booking.py --time 21:00 --duration 2 --parallel --attempts 5
 ```
 
-> **Note:** Both the CLI and Discord bot default to waiting until 1 minute before the reservation time. This is useful when booking windows open at the exact reservation time. Use `--no-wait` for immediate execution (CLI only).
+> **Booking Modes:**
+> - `--direct` (recommended): Uses one browser for setup, then fires lightweight HTTP POST requests at the target time. Fastest and lowest resource usage.
+> - `--parallel`: Spawns multiple Chrome instances that each fill out and submit the form. Uses more resources but doesn't rely on hardcoded form data.
+> - Neither flag: Sequential mode — tries courts one at a time in a single browser.
+>
+> Both the CLI and Discord bot default to waiting until 2 minutes before the reservation time. Use `--no-wait` for immediate execution.
 
 ### Open Play Registration
 
@@ -194,6 +206,7 @@ fly logs
 ├── fly.toml                  # Fly.io configuration
 └── utils/
     ├── booking_date.py       # Date selection
+    ├── direct_api.py         # Direct HTTP API booking (no browser UI)
     ├── discord.py            # Discord notifications
     ├── exceptions.py         # Custom exceptions
     ├── login.py              # Login utility

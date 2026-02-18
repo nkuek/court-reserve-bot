@@ -4,7 +4,9 @@ Court booking script for CourtReserve.
 
 Usage:
     python court_booking.py --time 21:00 --duration 2
-    python court_booking.py --time 21:00 --duration 2 --parallel  # Try all courts simultaneously
+    python court_booking.py --time 21:00 --duration 2 --direct      # Direct HTTP API (fastest)
+    python court_booking.py --time 21:00 --duration 2 --direct --dry-run  # Test without booking
+    python court_booking.py --time 21:00 --duration 2 --parallel    # Parallel browser instances
 """
 
 import logging
@@ -21,11 +23,16 @@ import typer
 from dotenv import load_dotenv
 
 from constants import (
-    get_page, close_browser, COURTS, VALID_DURATIONS,
-    FACILITY_CLOSING_HOUR, FACILITY_CLOSING_MINUTE, set_trace_label
+    get_page, get_context, close_browser, COURTS, VALID_DURATIONS,
+    FACILITY_CLOSING_HOUR, FACILITY_CLOSING_MINUTE, set_trace_label,
+    BASE_URL, ORG_ID, SCHEDULE_ID, RESERVATIONS_URL,
 )
 from utils.login import login
 from utils.booking_date import select_booking_date, parse_booking_date
+from utils.direct_api import (
+    extract_booking_tokens, extract_cookies_from_context,
+    fire_parallel_bookings, COURT_IDS,
+)
 from utils.discord import notify_success, notify_failure, notify_start
 from utils.exceptions import CourtUnavailableError
 from utils.wait import wait_until, parse_wait_time
@@ -674,12 +681,16 @@ def _run_parallel_booking(
             p.start()
             log.info(f"  Started worker: {worker_id}")
 
-    # Wait for all processes to complete (with timeout)
-    timeout = 120  # 2 minutes max
+    # Wait for all processes to complete
+    # Timeout must account for: setup (~15s) + sleep until click time + result polling (30s) + buffer (30s)
+    seconds_until_click = max(0, (target_time - datetime.now()).total_seconds())
+    timeout = int(seconds_until_click + 90)  # click wait + 60s for setup/polling + 30s buffer
+    log.info(f"  Process timeout: {timeout}s ({seconds_until_click:.0f}s until click + 90s buffer)")
+
     for worker_id, p in processes:
         p.join(timeout=timeout)
         if p.is_alive():
-            log.warning(f"Process {worker_id} timed out, terminating...")
+            log.warning(f"Process {worker_id} timed out after {timeout}s, terminating...")
             p.terminate()
             p.join(timeout=5)
 
@@ -793,6 +804,13 @@ def main(
             help="Try all available courts simultaneously using separate browser instances. Much faster but uses more resources.",
         ),
     ] = False,
+    direct: Annotated[
+        bool,
+        typer.Option(
+            "--direct",
+            help="Use direct HTTP API for booking (fastest). Uses one browser for setup, then fires HTTP POSTs at click time.",
+        ),
+    ] = False,
     attempts: Annotated[
         int,
         typer.Option(
@@ -800,6 +818,13 @@ def main(
             help="Number of parallel attempts per court with staggered timing (requires --parallel). e.g., 5 = clicks at -1s, -750ms, -500ms, -250ms, 0ms",
         ),
     ] = 3,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Do everything except the final booking POST. Logs the payload that would be sent.",
+        ),
+    ] = False,
     email: Annotated[
         str | None,
         typer.Option(
@@ -936,7 +961,138 @@ def main(
         courts_to_try = available_courts
         log.info(f"Will try {len(available_courts)} available court(s)")
 
-    # PARALLEL MODE: Try all courts simultaneously
+    # DIRECT API MODE: Use HTTP POST instead of browser UI clicks
+    if direct:
+        log.info("=" * 50)
+        log.info("DIRECT API MODE")
+        log.info("=" * 50)
+
+        # Open ONE court's form to extract session tokens (no form filling needed).
+        # Player data and static fields are hardcoded in build_reservation_payload().
+        session_tokens = None
+        courts_with_ids = []
+
+        for court_name in courts_to_try:
+            court_short = court_name.split()[2]
+
+            # If we have tokens and know this court's ID, skip opening the form
+            known_id = COURT_IDS.get(court_name)
+            if known_id and session_tokens is not None:
+                courts_with_ids.append((court_name, known_id))
+                log.info(f"  {court_short}: ID {known_id} (cached)")
+                continue
+
+            # Open the reservation form for this court (click its time slot)
+            log.info(f"  Opening form for {court_short}...")
+            try:
+                check_court_availability(court_name, reservation_time, end_time)
+            except Exception as err:
+                log.warning(f"  {court_short}: skipped ({err})")
+                continue
+
+            # Wait for form to load, then parse hidden inputs for tokens + CourtId
+            page.wait_for_timeout(2000)
+            tokens = extract_booking_tokens(page)
+            court_id = int(tokens.get("CourtId", 0))
+
+            if court_id:
+                courts_with_ids.append((court_name, court_id))
+                log.info(f"  {court_short}: ID {court_id}")
+
+            if session_tokens is None and tokens.get("__RequestVerificationToken"):
+                session_tokens = tokens
+                log.info(f"  Session tokens captured from {court_short}")
+
+            # Close the form
+            close_btn = page.locator('button[data-testid="Close"]')
+            if close_btn.count() > 0:
+                close_btn.click()
+                page.wait_for_timeout(300)
+
+        if not session_tokens or not session_tokens.get("__RequestVerificationToken"):
+            log.error("Failed to extract CSRF token from any court form")
+            notify_failure("Direct API: missing CSRF token")
+            raise typer.Exit(1)
+
+        if not courts_with_ids:
+            log.error("No courts with valid IDs found!")
+            notify_failure("Direct API: no court IDs found")
+            raise typer.Exit(1)
+
+        # Extract cookies from the browser context
+        context = get_context()
+        cookies = extract_cookies_from_context(context)
+
+        log.info(f"\nWill try {len(courts_with_ids)} court(s) via direct API:")
+        for name, cid in courts_with_ids:
+            short = name.split()[2]
+            log.info(f"  {short} (ID: {cid})")
+
+        # Close the browser - we only need HTTP from here
+        log.info("\nBrowser setup complete, closing browser...")
+        close_browser()
+
+        # Convert duration to minutes
+        duration_minutes = int(duration * 60)
+        # Format start time as HH:MM:SS
+        start_time_str = f"{hour:02d}:{minute:02d}:00"
+
+        # Fire parallel HTTP requests at target time
+        stagger_offsets = [-1000, -750, -500, -250, 0]
+
+        results = fire_parallel_bookings(
+            base_tokens=session_tokens,
+            cookies=cookies,
+            courts=courts_with_ids,
+            booking_date=booking_date,
+            start_time_str=start_time_str,
+            duration_minutes=duration_minutes,
+            target_time=target,
+            stagger_ms=stagger_offsets,
+            dry_run=dry_run,
+        )
+
+        # Report results
+        successes = [r for r in results if r.get("success")]
+        failures = [r for r in results if not r.get("success")]
+
+        log.info("")
+        log.info("=" * 60)
+        log.info("DIRECT API BOOKING RESULTS")
+        log.info("=" * 60)
+
+        if successes:
+            log.info("")
+            log.info("  ✓ SUCCESSFUL BOOKINGS:")
+            for r in successes:
+                log.info(f"     ✓ {r['court_short']} - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms")
+
+        if failures:
+            log.info("")
+            log.info("  ✗ FAILED ATTEMPTS:")
+            for r in failures:
+                log.info(f"     ✗ {r['court_short']} - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms: {r['response_text'][:80]}")
+
+        log.info("")
+        log.info(f"  Summary: {len(successes)} succeeded, {len(failures)} failed out of {len(results)} attempts")
+        log.info("=" * 60)
+
+        if successes:
+            first = successes[0]
+            log.info(f"\n🎉 BOOKED: {first['court']}")
+            sys.stdout.flush()
+            notify_success(first['court'], booking_date_str, reservation_time, duration)
+            return
+        else:
+            log.error("\n❌ ALL DIRECT API BOOKING ATTEMPTS FAILED!")
+            # Log response details for debugging
+            for r in failures:
+                log.error(f"  {r['court_short']}: {r['response_text'][:200]}")
+            sys.stdout.flush()
+            notify_failure(f"Direct API booking failed for {reservation_time} - all {len(results)} attempts failed")
+            raise typer.Exit(1)
+
+    # PARALLEL MODE: Try all courts simultaneously (browser-based)
     # Activate if --parallel flag set AND (multiple courts OR multiple attempts per court)
     log.info(f"Parallel mode check: parallel={parallel}, courts={len(courts_to_try)}, attempts={attempts}")
     if parallel and (len(courts_to_try) > 1 or attempts > 1):

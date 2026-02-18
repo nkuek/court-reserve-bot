@@ -87,47 +87,74 @@ def is_admin(user_id: int) -> bool:
 async def upload_log_to_paste(log_content: str) -> str | None:
     """Upload log content to a paste service and return the URL."""
     if not log_content or not log_content.strip():
+        log.warning("upload_log_to_paste: log content is empty, skipping")
         return None
 
-    paste_services = [
-        ("https://paste.rs/", lambda r: r if r.startswith("http") else None),
-        ("https://dpaste.org/api/", lambda r: f"https://dpaste.org{r.strip()}" if r.strip().startswith("/") else None),
-    ]
-
-    for service_url, parse_response in paste_services:
-        try:
-            async with aiohttp.ClientSession() as session:
-                headers = {"User-Agent": "CourtBookingBot/1.0"}
-
-                if "paste.rs" in service_url:
-                    async with session.post(
-                        service_url,
-                        data=log_content.encode("utf-8"),
-                        headers={**headers, "Content-Type": "text/plain"},
-                        timeout=aiohttp.ClientTimeout(total=15)
-                    ) as resp:
-                        if resp.status in (200, 201):
-                            result = (await resp.text()).strip()
-                            url = parse_response(result)
-                            if url:
-                                return url
+    # Try paste.rs first (simple raw text upload)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://paste.rs/",
+                data=log_content.encode("utf-8"),
+                headers={"Content-Type": "text/plain", "User-Agent": "CourtBookingBot/1.0"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                result = (await resp.text()).strip()
+                if resp.status in (200, 201) and result.startswith("http"):
+                    log.info(f"Log uploaded to paste.rs: {result}")
+                    return result
                 else:
-                    form_data = {"content": log_content, "syntax": "text", "expiry_days": 7}
-                    async with session.post(
-                        service_url,
-                        data=form_data,
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=15)
-                    ) as resp:
-                        if resp.status in (200, 201):
-                            result = (await resp.text()).strip()
-                            url = parse_response(result)
-                            if url:
-                                return url
-        except Exception as e:
-            log.warning(f"Paste upload to {service_url} failed: {e}")
-            continue
+                    log.warning(f"paste.rs returned status={resp.status}, body={result[:200]}")
+    except Exception as e:
+        log.warning(f"paste.rs upload failed: {e}")
 
+    # Try dpaste.org as fallback
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://dpaste.org/api/",
+                data={"content": log_content, "syntax": "text", "expiry_days": 7},
+                headers={"User-Agent": "CourtBookingBot/1.0"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                result = (await resp.text()).strip()
+                if resp.status in (200, 201):
+                    # dpaste returns a path like "/abc123" or a full URL
+                    if result.startswith("http"):
+                        log.info(f"Log uploaded to dpaste.org: {result}")
+                        return result
+                    elif result.startswith("/"):
+                        url = f"https://dpaste.org{result}"
+                        log.info(f"Log uploaded to dpaste.org: {url}")
+                        return url
+                    else:
+                        log.warning(f"dpaste.org returned unexpected body: {result[:200]}")
+                else:
+                    log.warning(f"dpaste.org returned status={resp.status}, body={result[:200]}")
+    except Exception as e:
+        log.warning(f"dpaste.org upload failed: {e}")
+
+    # Try ix.io as last resort
+    try:
+        async with aiohttp.ClientSession() as session:
+            form = aiohttp.FormData()
+            form.add_field("f:1", log_content)
+            async with session.post(
+                "http://ix.io",
+                data=form,
+                headers={"User-Agent": "CourtBookingBot/1.0"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                result = (await resp.text()).strip()
+                if resp.status == 200 and result.startswith("http"):
+                    log.info(f"Log uploaded to ix.io: {result}")
+                    return result
+                else:
+                    log.warning(f"ix.io returned status={resp.status}, body={result[:200]}")
+    except Exception as e:
+        log.warning(f"ix.io upload failed: {e}")
+
+    log.error("All paste services failed")
     return None
 
 
@@ -483,6 +510,7 @@ async def help_command(interaction: discord.Interaction):
         name="🎾 /book",
         value=(
             "Book a specific court and time.\n"
+            "Uses direct HTTP API for fastest booking.\n"
             "**Required:** `time`, `duration`\n"
             "**Optional:** `date`, `court`, `wait_until`\n"
             "```/book time:21:00 duration:2```"
@@ -1114,8 +1142,7 @@ class BookSlotView(discord.ui.View):
             "--time", time_24h,
             "--duration", str(self.selected_duration),
             "--date", self.date,
-            "--parallel",
-            "--attempts", "3",
+            "--direct",
             "--court", self.selected_court,
             "--email", email,
             "--password", password,
@@ -1234,61 +1261,15 @@ class FullLogView(discord.ui.View):
 
     @discord.ui.button(label="View Full Log", style=discord.ButtonStyle.secondary, emoji="📜")
     async def view_log(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Send the full log as a file attachment."""
-        # Create a text file with the log
+        """Send the full log as a file attachment and paste link."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"log_{timestamp}.txt"
 
-        # Upload to paste service for a simple public link
-        upload_url = None
-        upload_error = None
-        if self.full_log and len(self.full_log.strip()) > 0:
-            # Try multiple paste services in order of preference
-            paste_services = [
-                ("https://paste.rs/", "text/plain", lambda r: r if r.startswith("http") else None),
-                ("https://dpaste.org/api/", "application/x-www-form-urlencoded", lambda r: f"https://dpaste.org{r.strip()}" if r.strip().startswith("/") else None),
-            ]
-
-            for service_url, content_type, parse_response in paste_services:
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        headers = {"User-Agent": "CourtBookingBot/1.0"}
-
-                        if "paste.rs" in service_url:
-                            # paste.rs accepts raw text body
-                            async with session.post(
-                                service_url,
-                                data=self.full_log.encode("utf-8"),
-                                headers={**headers, "Content-Type": "text/plain"},
-                                timeout=aiohttp.ClientTimeout(total=15)
-                            ) as resp:
-                                if resp.status in (200, 201):
-                                    result = (await resp.text()).strip()
-                                    upload_url = parse_response(result)
-                        else:
-                            # dpaste.org uses form data
-                            form_data = {"content": self.full_log, "syntax": "text", "expiry_days": 7}
-                            async with session.post(
-                                service_url,
-                                data=form_data,
-                                headers=headers,
-                                timeout=aiohttp.ClientTimeout(total=15)
-                            ) as resp:
-                                if resp.status in (200, 201):
-                                    result = (await resp.text()).strip()
-                                    upload_url = parse_response(result)
-
-                        if upload_url:
-                            log.info(f"Log uploaded to {service_url}: {upload_url}")
-                            break
-                except Exception as e:
-                    log.warning(f"Paste upload to {service_url} failed: {e}")
-                    continue
-
-            if not upload_url:
-                upload_error = "All paste services failed"
+        # Upload to paste service
+        upload_url = await upload_log_to_paste(self.full_log)
 
         # Send DM with paste link so it's not ephemeral
+        dm_sent = False
         if upload_url:
             try:
                 await interaction.user.send(
@@ -1296,9 +1277,7 @@ class FullLogView(discord.ui.View):
                 )
                 dm_sent = True
             except discord.Forbidden:
-                dm_sent = False
-        else:
-            dm_sent = False
+                pass
 
         # Build ephemeral response content
         content = f"📜 **Full log for {self.task_name}:**"
@@ -1306,10 +1285,10 @@ class FullLogView(discord.ui.View):
             content += f"\n🔗 {upload_url}"
             if dm_sent:
                 content += "\n✅ Link also sent to your DMs"
-        elif upload_error:
-            content += f"\n⚠️ Upload failed: {upload_error}"
+        else:
+            content += "\n⚠️ Paste upload failed — log attached as file"
 
-        # Always include the file attachment so the log is never empty for the user
+        # Always include the file attachment
         file = None
         if self.full_log:
             file = discord.File(
@@ -1318,16 +1297,9 @@ class FullLogView(discord.ui.View):
             )
 
         if file:
-            await interaction.response.send_message(
-                content,
-                file=file,
-                ephemeral=True,
-            )
+            await interaction.response.send_message(content, file=file, ephemeral=True)
         else:
-            await interaction.response.send_message(
-                content + "\n(Log was empty.)",
-                ephemeral=True,
-            )
+            await interaction.response.send_message(content + "\n(Log was empty.)", ephemeral=True)
 
         # Disable the button after use
         button.disabled = True
@@ -1496,8 +1468,7 @@ async def book(
         "--time", time,
         "--duration", str(duration),
         "--date", date,
-        "--parallel",
-        "--attempts", "3",
+        "--direct",
         "--email", email,
         "--password", password,
     ]
@@ -2953,8 +2924,7 @@ async def run_scheduled_task(sched: dict):
             "--time", booking_time,
             "--duration", str(duration),
             "--date", "latest",  # Always book the latest available date
-            "--parallel",
-            "--attempts", "3",
+            "--direct",
             "--email", email,
             "--password", password,
             "--no-wait",  # Execute immediately - scheduler already handles timing
