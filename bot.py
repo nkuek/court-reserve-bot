@@ -149,28 +149,35 @@ async def notify_admins_with_log(
     user_id: int,
     success: bool,
     log_url: str | None,
+    log_content: str | None = None,
     schedule_id: int | None = None,
 ):
-    """DM all admin users with the log link for a completed task."""
-    if not log_url:
-        return
-
+    """DM all admin users with the log file for a completed task."""
     status = "✅ SUCCESS" if success else "❌ FAILED"
     schedule_info = f" (Schedule #{schedule_id})" if schedule_id else ""
 
     message = (
         f"📋 **Task Log** - {status}\n"
         f"**Task:** {task_name}{schedule_info}\n"
-        f"**User:** <@{user_id}>\n"
-        f"🔗 {log_url}"
+        f"**User:** <@{user_id}>"
     )
+    if log_url:
+        message += f"\n🔗 {log_url}"
 
     for admin_id in ADMIN_USER_IDS:
         if admin_id == user_id:
             continue  # Don't double-notify if admin ran the task
         try:
             admin_user = await client.fetch_user(admin_id)
-            await admin_user.send(message)
+            # Send log file as attachment
+            file = None
+            if log_content:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                file = discord.File(
+                    io.BytesIO(log_content.encode("utf-8")),
+                    filename=f"log_{task_name.replace(' ', '_')}_{timestamp}.txt",
+                )
+            await admin_user.send(message, file=file)
         except Exception as e:
             log.warning(f"Could not DM admin {admin_id}: {e}")
 
@@ -3117,6 +3124,7 @@ async def run_scheduled_script(cmd: list[str], task_name: str, discord_id: int, 
                 user_id=discord_id,
                 success=(process.returncode == 0),
                 log_url=log_url,
+                log_content=output,
                 schedule_id=schedule_id,
             )
 
@@ -3355,6 +3363,7 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
             user_id=user_id,
             success=(process.returncode == 0),
             log_url=log_url,
+            log_content=output,
         )
 
     except Exception as e:

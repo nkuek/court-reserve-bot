@@ -938,6 +938,12 @@ def main(
         else:
             log.info(f"Default behavior: waiting until 2 minutes before {target_click_time.strftime('%H:%M:%S')}")
         wait_until(wait_target)
+
+        # Refresh the page after waiting to ensure a fresh server session.
+        # Without this, the server-side session can expire during long waits,
+        # causing form loads (AJAX) to fail silently.
+        log.info("Refreshing page after wait...")
+        select_booking_date(booking_date)
     else:
         log.info("Target time is less than 2 minutes away, proceeding immediately")
 
@@ -991,7 +997,16 @@ def main(
                 continue
 
             # Wait for form to load, then parse hidden inputs for tokens + CourtId
-            page.wait_for_timeout(2000)
+            try:
+                page.wait_for_selector("input[name='CourtId']", state="attached", timeout=5000)
+            except Exception:
+                log.warning(f"  {court_short}: form inputs did not load within 5s")
+                # Close any partially-opened form before trying next court
+                close_btn = page.locator('button[data-testid="Close"]')
+                if close_btn.count() > 0:
+                    close_btn.click()
+                    page.wait_for_timeout(300)
+                continue
             tokens = extract_booking_tokens(page)
             court_id = int(tokens.get("CourtId", 0))
 
@@ -1220,7 +1235,8 @@ def run():
     try:
         app()
     except SystemExit:
-        # Re-raise SystemExit (from sys.exit) without wrapping
+        # Ensure trace is saved even on typer.Exit / sys.exit
+        close_browser()
         raise
     except Exception as e:
         error_type = type(e).__name__
