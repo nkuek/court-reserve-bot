@@ -156,10 +156,17 @@ async def notify_admins_with_log(
     status = "✅ SUCCESS" if success else "❌ FAILED"
     schedule_info = f" (Schedule #{schedule_id})" if schedule_id else ""
 
+    # Resolve username so DMs display it even without shared guild context
+    try:
+        user = await client.fetch_user(user_id)
+        user_display = f"{user.display_name} (<@{user_id}>)"
+    except Exception:
+        user_display = f"<@{user_id}>"
+
     message = (
         f"📋 **Task Log** - {status}\n"
         f"**Task:** {task_name}{schedule_info}\n"
-        f"**User:** <@{user_id}>"
+        f"**User:** {user_display}"
     )
     if log_url:
         message += f"\n🔗 {log_url}"
