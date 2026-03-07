@@ -1053,7 +1053,7 @@ def main(
         start_time_str = f"{hour:02d}:{minute:02d}:00"
 
         # Fire parallel HTTP requests at target time
-        stagger_offsets = [-1000, -750, -500, -250, 0]
+        stagger_offsets = [-750, -500, -250, 0]
 
         results = fire_parallel_bookings(
             base_tokens=session_tokens,
@@ -1080,13 +1080,15 @@ def main(
             log.info("")
             log.info("  ✓ SUCCESSFUL BOOKINGS:")
             for r in successes:
-                log.info(f"     ✓ {r['court_short']} - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms")
+                offset_tag = f"@{r['offset_ms']:+d}ms" if 'offset_ms' in r else ""
+                log.info(f"     ✓ {r['court_short']}{offset_tag} - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms")
 
         if failures:
             log.info("")
             log.info("  ✗ FAILED ATTEMPTS:")
             for r in failures:
-                log.info(f"     ✗ {r['court_short']} - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms: {r['response_text'][:80]}")
+                offset_tag = f"@{r['offset_ms']:+d}ms" if 'offset_ms' in r else ""
+                log.info(f"     ✗ {r['court_short']}{offset_tag} - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms: {r['response_text'][:80]}")
 
         log.info("")
         log.info(f"  Summary: {len(successes)} succeeded, {len(failures)} failed out of {len(results)} attempts")

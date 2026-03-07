@@ -405,8 +405,9 @@ def fire_parallel_bookings(
             log.info(f"    {court_short} (ID: {court_id}) at offset {offset_ms:+d}ms")
 
         return [{"success": False, "court": c, "court_short": c.split()[2],
-                 "response_status": 0, "response_text": "DRY RUN", "elapsed_ms": 0}
-                for c, _, _, _ in payloads]
+                 "response_status": 0, "response_text": "DRY RUN", "elapsed_ms": 0,
+                 "offset_ms": o}
+                for c, _, o, _ in payloads]
 
     # Wait until target time
     delay = (target_time - datetime.now()).total_seconds()
@@ -463,7 +464,7 @@ def fire_parallel_bookings(
         "Accept": "*/*",
     })
 
-    def _submit(court_name, payload):
+    def _submit(court_name, payload, offset_ms=None):
         """Submit via the shared session."""
         court_short = court_name.split()[2] if len(court_name.split()) > 2 else court_name
         start = time.time()
@@ -487,7 +488,7 @@ def fire_parallel_bookings(
                 except Exception:
                     message = resp.text[:200]
 
-            return {
+            result = {
                 "success": is_success,
                 "court": court_name,
                 "court_short": court_short,
@@ -495,8 +496,11 @@ def fire_parallel_bookings(
                 "response_text": message or resp.text[:500],
                 "elapsed_ms": elapsed_ms,
             }
+            if offset_ms is not None:
+                result["offset_ms"] = offset_ms
+            return result
         except Exception as e:
-            return {
+            result = {
                 "success": False,
                 "court": court_name,
                 "court_short": court_short,
@@ -504,6 +508,9 @@ def fire_parallel_bookings(
                 "response_text": str(e),
                 "elapsed_ms": (time.time() - start) * 1000,
             }
+            if offset_ms is not None:
+                result["offset_ms"] = offset_ms
+            return result
 
     # Fire all requests in parallel using threads
     with ThreadPoolExecutor(max_workers=total) as executor:
@@ -522,13 +529,14 @@ def fire_parallel_bookings(
             log.info(f"  Firing offset {offset_ms:+d}ms at {fire_actual.strftime('%H:%M:%S.%f')[:-3]} (diff: {diff:+.1f}ms)")
 
             for court_name, court_id, payload in by_offset[offset_ms]:
-                futures.append(executor.submit(_submit, court_name, payload))
+                futures.append(executor.submit(_submit, court_name, payload, offset_ms))
 
         # Collect results
         for future in as_completed(futures):
             result = future.result()
             status = "SUCCESS" if result["success"] else "FAILED"
-            log.info(f"  [{result['court_short']}] {status} - HTTP {result['response_status']} in {result['elapsed_ms']:.0f}ms")
+            offset_tag = f"@{result['offset_ms']:+d}ms" if 'offset_ms' in result else ""
+            log.info(f"  [{result['court_short']}{offset_tag}] {status} - HTTP {result['response_status']} in {result['elapsed_ms']:.0f}ms")
             all_results.append(result)
 
     session.close()
