@@ -9,12 +9,14 @@ No form filling is needed -- only a single page load to get session tokens.
 
 import logging
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
 import requests
+from requests.adapters import HTTPAdapter
 
 log = logging.getLogger(__name__)
 
@@ -452,8 +454,16 @@ def fire_parallel_bookings(
 
     all_results = []
 
-    # Use a shared session for connection reuse
+    # Use a shared session for connection reuse, with pool sized to fit all requests.
+    # pool_block=True makes threads wait for a connection instead of creating/discarding
+    # new ones (fixes "Connection pool is full, discarding connection" warnings).
     session = requests.Session()
+    adapter = HTTPAdapter(
+        pool_connections=1,         # single host
+        pool_maxsize=total,         # one connection per concurrent request
+        pool_block=True,            # block instead of discarding connections
+    )
+    session.mount("https://", adapter)
     session.cookies.update(cookies)
     session.headers.update({
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -464,15 +474,47 @@ def fire_parallel_bookings(
         "Accept": "*/*",
     })
 
+    # Pre-warm the TLS connection so booking POSTs reuse an established socket
+    # instead of paying DNS + TCP + TLS handshake (~200-400ms) on the first request.
+    log.info("Pre-warming TLS connection to reservations server...")
+    try:
+        warmup_start = time.time()
+        session.head(
+            f"{CREATE_RESERVATION_URL}?uiCulture=en-US",
+            timeout=10,
+        )
+        warmup_ms = (time.time() - warmup_start) * 1000
+        log.info(f"  TLS connection established in {warmup_ms:.0f}ms")
+    except Exception as e:
+        log.warning(f"  TLS pre-warm failed (non-fatal): {e}")
+
+    # Event to signal early cancellation once a booking succeeds
+    success_event = threading.Event()
+
     def _submit(court_name, payload, offset_ms=None):
-        """Submit via the shared session."""
+        """Submit via the shared session. Skips if another thread already succeeded."""
         court_short = court_name.split()[2] if len(court_name.split()) > 2 else court_name
+        offset_tag = f"@{offset_ms:+d}ms" if offset_ms is not None else ""
+
+        # Skip if we already have a successful booking
+        if success_event.is_set():
+            return {
+                "success": False,
+                "court": court_name,
+                "court_short": court_short,
+                "response_status": 0,
+                "response_text": "CANCELLED (another request succeeded)",
+                "elapsed_ms": 0,
+                "cancelled": True,
+                **({"offset_ms": offset_ms} if offset_ms is not None else {}),
+            }
+
         start = time.time()
         try:
             resp = session.post(
                 f"{CREATE_RESERVATION_URL}?uiCulture=en-US",
                 data=urlencode(payload, doseq=True),
-                timeout=30,
+                timeout=60,
             )
             elapsed_ms = (time.time() - start) * 1000
 
@@ -487,6 +529,9 @@ def fire_parallel_bookings(
                     is_success = bool(is_valid)
                 except Exception:
                     message = resp.text[:200]
+
+            if is_success:
+                success_event.set()
 
             result = {
                 "success": is_success,
@@ -531,9 +576,11 @@ def fire_parallel_bookings(
             for court_name, court_id, payload in by_offset[offset_ms]:
                 futures.append(executor.submit(_submit, court_name, payload, offset_ms))
 
-        # Collect results
+        # Collect results as they complete
         for future in as_completed(futures):
             result = future.result()
+            if result.get("cancelled"):
+                continue
             status = "SUCCESS" if result["success"] else "FAILED"
             offset_tag = f"@{result['offset_ms']:+d}ms" if 'offset_ms' in result else ""
             log.info(f"  [{result['court_short']}{offset_tag}] {status} - HTTP {result['response_status']} in {result['elapsed_ms']:.0f}ms")

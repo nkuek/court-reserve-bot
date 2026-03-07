@@ -818,6 +818,13 @@ def main(
             help="Number of parallel attempts per court with staggered timing (requires --parallel). e.g., 5 = clicks at -1s, -750ms, -500ms, -250ms, 0ms",
         ),
     ] = 3,
+    max_courts: Annotated[
+        int,
+        typer.Option(
+            "--max-courts",
+            help="Maximum courts to try in direct API mode. Fewer courts = faster per-request response times. 0 = no limit.",
+        ),
+    ] = 3,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -967,6 +974,11 @@ def main(
         courts_to_try = available_courts
         log.info(f"Will try {len(available_courts)} available court(s)")
 
+    # Limit courts in direct API mode to reduce request volume
+    if direct and max_courts > 0 and len(courts_to_try) > max_courts:
+        log.info(f"Limiting to top {max_courts} court(s) (of {len(courts_to_try)} available) to reduce request volume")
+        courts_to_try = courts_to_try[:max_courts]
+
     # DIRECT API MODE: Use HTTP POST instead of browser UI clicks
     if direct:
         log.info("=" * 50)
@@ -1101,12 +1113,21 @@ def main(
             notify_success(first['court'], booking_date_str, reservation_time, duration)
             return
         else:
-            log.error("\n❌ ALL DIRECT API BOOKING ATTEMPTS FAILED!")
-            # Log response details for debugging
-            for r in failures:
-                log.error(f"  {r['court_short']}: {r['response_text'][:200]}")
-            sys.stdout.flush()
-            notify_failure(f"Direct API booking failed for {reservation_time} - all {len(results)} attempts failed")
+            timed_out = [r for r in failures if r["response_status"] == 0]
+            if timed_out:
+                log.warning(f"\n⚠️  {len(timed_out)} request(s) timed out - booking may have succeeded server-side!")
+                log.warning("  Check CourtReserve manually to verify.")
+                sys.stdout.flush()
+                notify_failure(
+                    f"Direct API booking for {reservation_time} - all {len(results)} attempts failed, "
+                    f"but {len(timed_out)} timed out (booking may have succeeded - check manually!)"
+                )
+            else:
+                log.error("\n❌ ALL DIRECT API BOOKING ATTEMPTS FAILED!")
+                for r in failures:
+                    log.error(f"  {r['court_short']}: {r['response_text'][:200]}")
+                sys.stdout.flush()
+                notify_failure(f"Direct API booking failed for {reservation_time} - all {len(results)} attempts failed")
             raise typer.Exit(1)
 
     # PARALLEL MODE: Try all courts simultaneously (browser-based)
