@@ -359,19 +359,21 @@ def fire_parallel_bookings(
     if stagger_ms is None:
         stagger_ms = [0]
 
-    # Pre-build all payloads
+    # Pre-build all payloads (encode once, reuse across offsets)
     payloads = []
     for court_name, court_id in courts:
+        payload = build_reservation_payload(
+            session_tokens=base_tokens,
+            court_name=court_name,
+            court_id=court_id,
+            booking_date=booking_date,
+            start_time_str=start_time_str,
+            duration_minutes=duration_minutes,
+        )
+        encoded = urlencode(payload, doseq=True)
+        court_short = court_name.split()[2] if len(court_name.split()) > 2 else court_name
         for offset_ms in stagger_ms:
-            payload = build_reservation_payload(
-                session_tokens=base_tokens,
-                court_name=court_name,
-                court_id=court_id,
-                booking_date=booking_date,
-                start_time_str=start_time_str,
-                duration_minutes=duration_minutes,
-            )
-            payloads.append((court_name, court_id, offset_ms, payload))
+            payloads.append((court_name, court_short, court_id, offset_ms, payload, encoded))
 
     total = len(payloads)
     log.info(f"Prepared {total} booking requests for {len(courts)} court(s)")
@@ -388,9 +390,8 @@ def fire_parallel_bookings(
         log.info("")
 
         # Log one sample payload in detail
-        sample_court, sample_id, sample_offset, sample_payload = payloads[0]
-        court_short = sample_court.split()[2]
-        log.info(f"  Sample payload for {court_short} (CourtId={sample_id}):")
+        sample_court, sample_short, sample_id, sample_offset, sample_payload, _ = payloads[0]
+        log.info(f"  Sample payload for {sample_short} (CourtId={sample_id}):")
         for key in sorted(sample_payload.keys()):
             val = sample_payload[key]
             if key == "DisclosureText":
@@ -402,14 +403,13 @@ def fire_parallel_bookings(
         # Log all courts that would be tried
         log.info("")
         log.info("  Courts that would be booked:")
-        for court_name, court_id, offset_ms, _ in payloads:
-            court_short = court_name.split()[2]
+        for court_name, court_short, court_id, offset_ms, _, _ in payloads:
             log.info(f"    {court_short} (ID: {court_id}) at offset {offset_ms:+d}ms")
 
-        return [{"success": False, "court": c, "court_short": c.split()[2],
+        return [{"success": False, "court": c, "court_short": cs,
                  "response_status": 0, "response_text": "DRY RUN", "elapsed_ms": 0,
                  "offset_ms": o}
-                for c, _, o, _ in payloads]
+                for c, cs, _, o, _, _ in payloads]
 
     # Wait until target time
     delay = (target_time - datetime.now()).total_seconds()
@@ -449,19 +449,20 @@ def fire_parallel_bookings(
 
     # Group payloads by offset for staggered firing
     by_offset = {}
-    for court_name, court_id, offset_ms, payload in payloads:
-        by_offset.setdefault(offset_ms, []).append((court_name, court_id, payload))
+    for court_name, court_short, court_id, offset_ms, payload, encoded in payloads:
+        by_offset.setdefault(offset_ms, []).append((court_name, court_short, court_id, encoded))
 
     all_results = []
 
-    # Use a shared session for connection reuse, with pool sized to fit all requests.
+    # Use a shared session for connection reuse.
+    # pool_maxsize = number of courts (max concurrent requests per offset batch).
     # pool_block=True makes threads wait for a connection instead of creating/discarding
     # new ones (fixes "Connection pool is full, discarding connection" warnings).
     session = requests.Session()
     adapter = HTTPAdapter(
-        pool_connections=1,         # single host
-        pool_maxsize=total,         # one connection per concurrent request
-        pool_block=True,            # block instead of discarding connections
+        pool_connections=1,             # single host
+        pool_maxsize=len(courts),       # one connection per court (offsets fire sequentially)
+        pool_block=True,                # block instead of discarding connections
     )
     session.mount("https://", adapter)
     session.cookies.update(cookies)
@@ -491,29 +492,21 @@ def fire_parallel_bookings(
     # Event to signal early cancellation once a booking succeeds
     success_event = threading.Event()
 
-    def _submit(court_name, payload, offset_ms=None):
+    def _submit(court_name, court_short, encoded_payload, offset_ms):
         """Submit via the shared session. Skips if another thread already succeeded."""
-        court_short = court_name.split()[2] if len(court_name.split()) > 2 else court_name
-        offset_tag = f"@{offset_ms:+d}ms" if offset_ms is not None else ""
-
-        # Skip if we already have a successful booking
+        # Check early-exit before doing any work
         if success_event.is_set():
             return {
-                "success": False,
-                "court": court_name,
-                "court_short": court_short,
-                "response_status": 0,
-                "response_text": "CANCELLED (another request succeeded)",
-                "elapsed_ms": 0,
-                "cancelled": True,
-                **({"offset_ms": offset_ms} if offset_ms is not None else {}),
+                "success": False, "court": court_name, "court_short": court_short,
+                "response_status": 0, "response_text": "CANCELLED (another request succeeded)",
+                "elapsed_ms": 0, "offset_ms": offset_ms, "cancelled": True,
             }
 
         start = time.time()
         try:
             resp = session.post(
                 f"{CREATE_RESERVATION_URL}?uiCulture=en-US",
-                data=urlencode(payload, doseq=True),
+                data=encoded_payload,
                 timeout=60,
             )
             elapsed_ms = (time.time() - start) * 1000
@@ -533,29 +526,18 @@ def fire_parallel_bookings(
             if is_success:
                 success_event.set()
 
-            result = {
-                "success": is_success,
-                "court": court_name,
-                "court_short": court_short,
+            return {
+                "success": is_success, "court": court_name, "court_short": court_short,
                 "response_status": resp.status_code,
                 "response_text": message or resp.text[:500],
-                "elapsed_ms": elapsed_ms,
+                "elapsed_ms": elapsed_ms, "offset_ms": offset_ms,
             }
-            if offset_ms is not None:
-                result["offset_ms"] = offset_ms
-            return result
         except Exception as e:
-            result = {
-                "success": False,
-                "court": court_name,
-                "court_short": court_short,
-                "response_status": 0,
-                "response_text": str(e),
-                "elapsed_ms": (time.time() - start) * 1000,
+            return {
+                "success": False, "court": court_name, "court_short": court_short,
+                "response_status": 0, "response_text": str(e),
+                "elapsed_ms": (time.time() - start) * 1000, "offset_ms": offset_ms,
             }
-            if offset_ms is not None:
-                result["offset_ms"] = offset_ms
-            return result
 
     # Fire all requests in parallel using threads
     with ThreadPoolExecutor(max_workers=total) as executor:
@@ -573,8 +555,8 @@ def fire_parallel_bookings(
             diff = (fire_actual - fire_time).total_seconds() * 1000
             log.info(f"  Firing offset {offset_ms:+d}ms at {fire_actual.strftime('%H:%M:%S.%f')[:-3]} (diff: {diff:+.1f}ms)")
 
-            for court_name, court_id, payload in by_offset[offset_ms]:
-                futures.append(executor.submit(_submit, court_name, payload, offset_ms))
+            for court_name, court_short, court_id, encoded in by_offset[offset_ms]:
+                futures.append(executor.submit(_submit, court_name, court_short, encoded, offset_ms))
 
         # Collect results as they complete
         for future in as_completed(futures):
@@ -582,8 +564,7 @@ def fire_parallel_bookings(
             if result.get("cancelled"):
                 continue
             status = "SUCCESS" if result["success"] else "FAILED"
-            offset_tag = f"@{result['offset_ms']:+d}ms" if 'offset_ms' in result else ""
-            log.info(f"  [{result['court_short']}{offset_tag}] {status} - HTTP {result['response_status']} in {result['elapsed_ms']:.0f}ms")
+            log.info(f"  [{result['court_short']}@{result['offset_ms']:+d}ms] {status} - HTTP {result['response_status']} in {result['elapsed_ms']:.0f}ms")
             all_results.append(result)
 
     session.close()
