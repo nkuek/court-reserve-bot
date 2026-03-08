@@ -1044,9 +1044,16 @@ def main(
                 log.warning(f"  {court_short}: skipped ({err})")
                 continue
 
-            # Wait for form to load, then parse hidden inputs for tokens + CourtId
+            # Wait for form to fully load (CourtId appears first, but other
+            # inputs render via AJAX shortly after — wait for a minimum count
+            # to avoid extracting 0 inputs from a partially-rendered form)
             try:
                 page.wait_for_selector("input[name='CourtId']", state="attached", timeout=5000)
+                # Wait for the form to stabilize — need at least the CSRF token + key fields
+                page.wait_for_function(
+                    "() => document.querySelectorAll('input[name]').length >= 10",
+                    timeout=5000,
+                )
             except Exception:
                 log.warning(f"  {court_short}: form inputs did not load within 5s")
                 # Close any partially-opened form before trying next court
