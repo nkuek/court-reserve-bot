@@ -448,6 +448,15 @@ def _run_once(
             f"  Original error: {e}"
         )
 
+    # Check disclosure checkbox if present (required before finalizing)
+    disclosure_checkbox = page.locator('[data-testid="disclosure-agree-checkbox"]')
+    if disclosure_checkbox.count() > 0 and disclosure_checkbox.is_visible():
+        if not disclosure_checkbox.is_checked():
+            disclosure_checkbox.check()
+            log.info("  Checked disclosure agreement checkbox")
+        else:
+            log.info("  Disclosure checkbox already checked")
+
     finalize_button.click()
 
     # Wait for the registration result
