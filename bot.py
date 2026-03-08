@@ -1307,6 +1307,9 @@ class FullLogView(discord.ui.View):
         # Send log as a DM (works on mobile, unlike ephemeral file attachments)
         dm_sent = False
         try:
+            # Defer first to avoid 3-second interaction timeout while sending DM
+            await interaction.response.defer(ephemeral=True)
+
             file = None
             if self.full_log:
                 file = discord.File(
@@ -1321,9 +1324,9 @@ class FullLogView(discord.ui.View):
         except discord.Forbidden:
             pass
 
-        # Acknowledge the button click
+        # Follow up on the deferred interaction
         if dm_sent:
-            await interaction.response.send_message("📜 Log sent to your DMs!", ephemeral=True)
+            await interaction.followup.send("📜 Log sent to your DMs!", ephemeral=True)
         else:
             # DMs disabled — fall back to ephemeral (won't show file on mobile)
             file = None
@@ -1332,7 +1335,7 @@ class FullLogView(discord.ui.View):
                     io.BytesIO(self.full_log.encode("utf-8")),
                     filename=filename,
                 )
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 content + "\n⚠️ Couldn't DM you — enable DMs for file attachments on mobile",
                 file=file,
                 ephemeral=True,
