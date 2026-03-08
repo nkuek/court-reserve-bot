@@ -11,6 +11,7 @@ Usage:
 
 import logging
 import multiprocessing
+import json
 import os
 import re
 import sys
@@ -797,6 +798,13 @@ def main(
             help="Specific court to book (e.g., 'Pickleball Court 5C (Bubble B)'). If not set, tries all courts.",
         ),
     ] = None,
+    courts_preferred: Annotated[
+        str | None,
+        typer.Option(
+            "--courts",
+            help="Comma-separated court short names in priority order (e.g., '5C,6A,6B'). Only these courts will be tried.",
+        ),
+    ] = None,
     parallel: Annotated[
         bool,
         typer.Option(
@@ -964,6 +972,34 @@ def main(
             raise typer.Exit(1)
         courts_to_try = available_courts
         log.info(f"Targeting specific court: {court}")
+    elif courts_preferred:
+        # User specified preferred courts by short name (e.g., "5C,6A,6B")
+        short_names = [s.strip() for s in courts_preferred.split(",") if s.strip()]
+        # Resolve short names to full court names
+        short_to_full = {}
+        for c in COURTS:
+            # Extract short name: "5C" from "Pickleball Court 5C (Bubble B)"
+            parts = c.split()
+            if len(parts) > 2:
+                short = parts[2].lstrip("#")
+                short_to_full[short.upper()] = c
+        preferred_full = []
+        for s in short_names:
+            full = short_to_full.get(s.upper())
+            if full:
+                preferred_full.append(full)
+            else:
+                log.warning(f"Unknown court short name: {s}")
+        if not preferred_full:
+            log.error(f"No valid courts in preference list: {courts_preferred}")
+            raise typer.Exit(1)
+        available_courts = get_available_courts(reservation_time, end_time, courts=preferred_full)
+        if not available_courts:
+            log.error(f"None of the preferred courts ({courts_preferred}) are available!")
+            notify_failure(f"Preferred courts ({courts_preferred}) not available for {reservation_time}")
+            raise typer.Exit(1)
+        courts_to_try = available_courts
+        log.info(f"Using preferred courts: {', '.join(c.split()[2] for c in courts_to_try)}")
     else:
         # Scan all courts to find available ones
         available_courts = get_available_courts(reservation_time, end_time)
@@ -1092,28 +1128,60 @@ def main(
             log.info("")
             log.info("  ✓ SUCCESSFUL BOOKINGS:")
             for r in successes:
-                offset_tag = f"@{r['offset_ms']:+d}ms" if 'offset_ms' in r else ""
-                log.info(f"     ✓ {r['court_short']}{offset_tag} - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms")
+                log.info(f"     ✓ {r['court_short']}@{r['offset_ms']:+d}ms - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms")
 
         if failures:
             log.info("")
             log.info("  ✗ FAILED ATTEMPTS:")
             for r in failures:
-                offset_tag = f"@{r['offset_ms']:+d}ms" if 'offset_ms' in r else ""
-                log.info(f"     ✗ {r['court_short']}{offset_tag} - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms: {r['response_text'][:80]}")
+                log.info(f"     ✗ {r['court_short']}@{r['offset_ms']:+d}ms - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms: {r['response_text'][:80]}")
 
         log.info("")
         log.info(f"  Summary: {len(successes)} succeeded, {len(failures)} failed out of {len(results)} attempts")
         log.info("=" * 60)
 
+        # Emit structured result JSON for bot parsing
+        courts_tried = [r["court_short"] for r in results]
+        # Deduplicate while preserving order
+        seen = set()
+        courts_tried_unique = [c for c in courts_tried if not (c in seen or seen.add(c))]
+
         if successes:
             first = successes[0]
+            result_json = {
+                "success": True,
+                "court": first["court"],
+                "court_short": first["court_short"],
+                "elapsed_ms": first["elapsed_ms"],
+                "offset_ms": first["offset_ms"],
+                "courts_tried": courts_tried_unique,
+                "total_attempts": len(results),
+            }
+            print(f"===RESULT_JSON==={json.dumps(result_json)}===END_RESULT_JSON===")
             log.info(f"\n🎉 BOOKED: {first['court']}")
             sys.stdout.flush()
             notify_success(first['court'], booking_date_str, reservation_time, duration)
             return
         else:
             timed_out = [r for r in failures if r["response_status"] == 0]
+            # Collect unique failure reasons
+            failure_reasons = []
+            seen_reasons = set()
+            for r in failures:
+                reason = r["response_text"][:200]
+                if reason not in seen_reasons:
+                    seen_reasons.add(reason)
+                    failure_reasons.append(reason)
+
+            result_json = {
+                "success": False,
+                "courts_tried": courts_tried_unique,
+                "total_attempts": len(results),
+                "timed_out": len(timed_out),
+                "failure_reasons": failure_reasons[:5],
+            }
+            print(f"===RESULT_JSON==={json.dumps(result_json)}===END_RESULT_JSON===")
+
             if timed_out:
                 log.warning(f"\n⚠️  {len(timed_out)} request(s) timed out - booking may have succeeded server-side!")
                 log.warning("  Check CourtReserve manually to verify.")
