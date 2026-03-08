@@ -21,6 +21,10 @@ import httpx
 
 log = logging.getLogger(__name__)
 
+# Suppress httpx's built-in request/response logging
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 # Known court IDs (discovered from Playwright traces and scheduler API)
 COURT_IDS = {
     "Pickleball Court 5A (Bubble B)": 36534,
@@ -29,8 +33,8 @@ COURT_IDS = {
     "Pickleball Court 6A (Bubble B)": 36537,
     "Pickleball Court 6B (Bubble B)": 36538,
     "Pickleball Court 6C (Bubble B)": 36539,
-    "Pickleball Court #7A (Bubble B)": None,  # Discovered at runtime
-    "Pickleball Court #7B (Bubble B)": None,  # Discovered at runtime
+    "Pickleball Court #7A (Bubble B)": None,   # Discovered at runtime
+    "Pickleball Court #7B (Bubble B)": 25663,
     "Pickleball Court #8A (Bubble B)": 25664,
     "Pickleball Court #8B (Bubble B)": 25665,
 }
@@ -490,7 +494,8 @@ def fire_parallel_bookings(
 
             fire_actual = datetime.now()
             diff = (fire_actual - fire_time).total_seconds() * 1000
-            log.info(f"  Firing offset {offset_ms:+d}ms at {fire_actual.strftime('%H:%M:%S.%f')[:-3]} (diff: {diff:+.1f}ms)")
+            diff_str = f" (diff: {diff:+.1f}ms)" if abs(diff) < 60000 else ""
+            log.info(f"  Firing offset {offset_ms:+d}ms at {fire_actual.strftime('%H:%M:%S.%f')[:-3]}{diff_str}")
 
             for court_name, court_short, court_id, encoded in by_offset[offset_ms]:
                 futures.append(executor.submit(_submit, court_name, court_short, encoded, offset_ms))
