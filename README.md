@@ -94,6 +94,12 @@ python court_booking.py --time 21:00 --duration 2 --direct --date tomorrow --no-
 # Wait until a specific time (e.g., when booking window opens at 7 AM)
 python court_booking.py --time 21:00 --duration 2 --direct --wait-until 07:00
 
+# Try more courts (default: top 3 available, 0 = no limit)
+python court_booking.py --time 21:00 --duration 2 --direct --max-courts 5
+
+# Specify preferred courts in priority order
+python court_booking.py --time 21:00 --duration 2 --direct --courts 5C,6A,6B
+
 # Parallel browser mode (legacy — uses multiple Chrome instances)
 python court_booking.py --time 21:00 --duration 2 --parallel --attempts 5
 ```
@@ -156,7 +162,7 @@ Run bookings via Discord commands instead of the command line.
 | `/unregister`                 | Delete your saved credentials      |
 | `/account`                    | View your registered email         |
 | `/check-availability`         | View available slots (with quick-book) |
-| `/book time:21:00 duration:2` | Book a court directly              |
+| `/book time:21:00 duration:2` | Book a court (court can be `5C,6A,6B`) |
 | `/openplay`                   | Register for open play             |
 | `/cancel`                     | Cancel a running task              |
 | `/schedule list`              | View your scheduled tasks          |

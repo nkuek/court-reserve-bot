@@ -189,6 +189,36 @@ async def notify_admins_with_log(
             log.warning(f"Could not DM admin {admin_id}: {e}")
 
 
+def _parse_result_json(output: str) -> dict | None:
+    """Extract structured result JSON from script output."""
+    marker_start = "===RESULT_JSON==="
+    marker_end = "===END_RESULT_JSON==="
+    start = output.find(marker_start)
+    end = output.find(marker_end)
+    if start == -1 or end == -1:
+        return None
+    try:
+        return json.loads(output[start + len(marker_start):end])
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _friendly_failure_reason(reason: str) -> str:
+    """Convert raw server error text into a user-friendly message."""
+    r = reason.lower()
+    if "no available courts" in r or "not available for selected time" in r:
+        return "Someone else booked the court before the bot could"
+    if "restricted to 1 prime time" in r:
+        return "Booking succeeded on another court (Prime Time limit reached)"
+    if "read timed out" in r or "timed out" in r:
+        return "Server was too slow to respond — may have gone through, check manually"
+    if "is only allowed to reserve up to" in r:
+        return "Request fired too early — server rejected it (booking window not open yet)"
+    if "already has a reservation" in r:
+        return "You already have a reservation at this time"
+    return reason[:120]
+
+
 # Available courts with short names for UI (matching court_booking.py)
 COURTS = [
     ("5A", "Pickleball Court 5A (Bubble B)"),
@@ -513,7 +543,8 @@ async def help_command(interaction: discord.Interaction):
             "Uses direct HTTP API for fastest booking.\n"
             "**Required:** `time`, `duration`\n"
             "**Optional:** `date`, `court`, `wait_until`\n"
-            "```/book time:21:00 duration:2```"
+            "`court` can be a single court or a priority list: `5C,6A,6B`\n"
+            "```/book time:21:00 duration:2 court:5C,6A```"
         ),
         inline=False,
     )
@@ -1313,6 +1344,25 @@ class FullLogView(discord.ui.View):
         await interaction.message.edit(view=self)
 
 
+class RetryBookingView(discord.ui.View):
+    """View with a retry button after a booking failure."""
+
+    def __init__(self, cmd: list[str], task_name: str, task_desc: str, interaction: discord.Interaction):
+        super().__init__(timeout=300)  # 5 minutes to click retry
+        self.cmd = cmd
+        self.task_name = task_name
+        self.task_desc = task_desc
+        self.original_interaction = interaction
+
+    @discord.ui.button(label="Try Again", style=discord.ButtonStyle.primary, emoji="🔄")
+    async def retry(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button.disabled = True
+        button.label = "Retrying..."
+        await interaction.message.edit(view=self)
+        await interaction.response.send_message("🔄 Retrying booking...", ephemeral=True)
+        asyncio.create_task(_run_script(self.original_interaction, self.cmd, self.task_name, self.task_desc))
+
+
 class LiveLogCancelView(discord.ui.View):
     """View with a cancel button for live log messages."""
 
@@ -1427,7 +1477,7 @@ async def cancel(interaction: discord.Interaction):
     time="Reservation time in 24h format (e.g., 21:00 for 9 PM)",
     duration="Duration in hours (1, 1.5, 2, 2.5, or 3)",
     date="Date to book (today, tomorrow, +3d, 12/15, or latest)",
-    court="Specific court to book (or 'any' for auto-select)",
+    court="Court to book: 'any', a single court, or comma-separated priority list (e.g., '5C,6A,6B')",
     wait_until="Wait until this time before starting (e.g., 07:00)",
 )
 @app_commands.choices(duration=[
@@ -1479,16 +1529,32 @@ async def book(
         "--password", password,
     ]
 
-    # Add court if specified (not "any")
+    # Add court preference
     if court and court.lower() != "any":
-        cmd.extend(["--court", court])
+        if "," in court:
+            # Comma-separated priority list (e.g., "5C,6A,6B")
+            cmd.extend(["--courts", court])
+        else:
+            # Single court (full name or short name)
+            # Resolve short name to full name if needed
+            court_full = court
+            for short, full in COURTS:
+                if court.upper() == short.upper():
+                    court_full = full
+                    break
+            cmd.extend(["--court", court_full])
 
     if wait_until:
         cmd.extend(["--wait-until", wait_until])
     # Otherwise, use default behavior: wait until 1 minute before reservation time
 
     # Format court for display
-    court_display = "Any" if court.lower() == "any" else court.replace("Pickleball Court ", "").replace(" (Bubble B)", "")
+    if court.lower() == "any":
+        court_display = "Any (auto-select)"
+    elif "," in court:
+        court_display = court.upper()
+    else:
+        court_display = court.replace("Pickleball Court ", "").replace(" (Bubble B)", "")
 
     # Send initial response
     embed = discord.Embed(
@@ -3055,6 +3121,8 @@ async def run_scheduled_script(cmd: list[str], task_name: str, discord_id: int, 
 
         # Send result to user
         if user:
+            result_data = _parse_result_json(output)
+
             if process.returncode == 0:
                 embed = discord.Embed(
                     title=f"🎉 {task_name} - SUCCESS!",
@@ -3062,18 +3130,25 @@ async def run_scheduled_script(cmd: list[str], task_name: str, discord_id: int, 
                     timestamp=datetime.now(),
                 )
 
-                # Extract useful details from output
-                success_details = []
-                for line in output_lines:
-                    line_lower = line.lower()
-                    if any(kw in line_lower for kw in ["success", "reservation saved", "registered", "booked", "confirmed"]):
-                        clean_line = line.split("]")[-1].strip() if "]" in line else line
-                        success_details.append(clean_line)
-
-                if success_details:
-                    embed.description = "✅ " + "\n✅ ".join(success_details[:3])
+                if result_data and result_data.get("success"):
+                    court_short = result_data.get("court_short", "?")
+                    elapsed = result_data.get("elapsed_ms", 0)
+                    offset = result_data.get("offset_ms", 0)
+                    courts_tried = result_data.get("courts_tried", [])
+                    embed.description = f"✅ **Booked court {court_short}** in {elapsed:.0f}ms (offset {offset:+d}ms)"
+                    if len(courts_tried) > 1:
+                        embed.add_field(name="Courts tried", value=", ".join(courts_tried), inline=True)
                 else:
-                    embed.description = "✅ Your scheduled task completed successfully!"
+                    success_details = []
+                    for line in output_lines:
+                        line_lower = line.lower()
+                        if any(kw in line_lower for kw in ["success", "reservation saved", "registered", "booked", "confirmed"]):
+                            clean_line = line.split("]")[-1].strip() if "]" in line else line
+                            success_details.append(clean_line)
+                    if success_details:
+                        embed.description = "✅ " + "\n✅ ".join(success_details[:3])
+                    else:
+                        embed.description = "✅ Your scheduled task completed successfully!"
 
                 embed.set_footer(text="You're all set! See you on the court 🏸")
 
@@ -3084,23 +3159,43 @@ async def run_scheduled_script(cmd: list[str], task_name: str, discord_id: int, 
                     timestamp=datetime.now(),
                 )
 
-                # Try to find the actual error message
-                error_lines = []
-                for line in output_lines:
-                    line_lower = line.lower()
-                    if any(kw in line_lower for kw in ["error", "failed", "unavailable", "exception", "could not"]):
-                        clean_line = line.split("]")[-1].strip() if "]" in line else line
-                        error_lines.append(clean_line)
+                if result_data and not result_data.get("success"):
+                    courts_tried = result_data.get("courts_tried", [])
+                    total = result_data.get("total_attempts", 0)
+                    timed_out_count = result_data.get("timed_out", 0)
+                    reasons = result_data.get("failure_reasons", [])
 
-                if error_lines:
-                    embed.description = "**What went wrong:**\n" + "\n".join(error_lines[-3:])
+                    friendly_reasons = [_friendly_failure_reason(r) for r in reasons]
+                    seen_r = set()
+                    unique_reasons = [r for r in friendly_reasons if not (r in seen_r or seen_r.add(r))]
+
+                    desc_parts = []
+                    if courts_tried:
+                        desc_parts.append(f"**Courts tried:** {', '.join(courts_tried)}")
+                    desc_parts.append(f"**Attempts:** {total}")
+                    if timed_out_count:
+                        desc_parts.append(f"⚠️ {timed_out_count} request(s) timed out — booking may have succeeded, check manually!")
+                    if unique_reasons:
+                        desc_parts.append("**Why it failed:**")
+                        for r in unique_reasons[:3]:
+                            desc_parts.append(f"• {r}")
+                    embed.description = "\n".join(desc_parts)
                 else:
-                    last_lines = "\n".join(output_lines[-5:])
-                    embed.description = f"**Last output:**\n```\n{last_lines[:1000]}\n```"
+                    error_lines = []
+                    for line in output_lines:
+                        line_lower = line.lower()
+                        if any(kw in line_lower for kw in ["error", "failed", "unavailable", "exception", "could not"]):
+                            clean_line = line.split("]")[-1].strip() if "]" in line else line
+                            error_lines.append(clean_line)
+                    if error_lines:
+                        embed.description = "**What went wrong:**\n" + "\n".join(error_lines[-3:])
+                    else:
+                        last_lines = "\n".join(output_lines[-5:])
+                        embed.description = f"**Last output:**\n```\n{last_lines[:1000]}\n```"
 
                 embed.add_field(
                     name="💡 What to do",
-                    value="Try running the command again, or check if the court/event is still available.",
+                    value="The schedule will try again next week. Use `/schedule skip` to skip, or `/book` to try manually.",
                     inline=False,
                 )
 
@@ -3277,6 +3372,9 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
             # Already handled by the cancel button callback
             return
 
+        # Parse structured result JSON if available
+        result_data = _parse_result_json(output)
+
         # Determine success/failure and notify user clearly
         if process.returncode == 0:
             # SUCCESS - Green embed with celebration
@@ -3286,22 +3384,26 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
                 timestamp=datetime.now()
             )
 
-            # Extract useful details from output
-            success_details = []
-            for line in output_lines:
-                line_lower = line.lower()
-                if any(keyword in line_lower for keyword in ["success", "reservation saved", "registered", "booked", "confirmed"]):
-                    # Clean up the line (remove timestamps and log prefixes)
-                    clean_line = line.split("]")[-1].strip() if "]" in line else line
-                    success_details.append(clean_line)
-                elif "court" in line_lower and (":" in line or "selected" in line_lower):
-                    clean_line = line.split("]")[-1].strip() if "]" in line else line
-                    success_details.append(clean_line)
-
-            if success_details:
-                embed.description = "✅ " + "\n✅ ".join(success_details[:3])  # Top 3 relevant lines
+            if result_data and result_data.get("success"):
+                court_short = result_data.get("court_short", "?")
+                elapsed = result_data.get("elapsed_ms", 0)
+                offset = result_data.get("offset_ms", 0)
+                courts_tried = result_data.get("courts_tried", [])
+                embed.description = f"✅ **Booked court {court_short}** in {elapsed:.0f}ms (offset {offset:+d}ms)"
+                if len(courts_tried) > 1:
+                    embed.add_field(name="Courts tried", value=", ".join(courts_tried), inline=True)
             else:
-                embed.description = "✅ Your reservation was completed successfully!"
+                # Fallback to log scraping
+                success_details = []
+                for line in output_lines:
+                    line_lower = line.lower()
+                    if any(keyword in line_lower for keyword in ["success", "reservation saved", "registered", "booked", "confirmed"]):
+                        clean_line = line.split("]")[-1].strip() if "]" in line else line
+                        success_details.append(clean_line)
+                if success_details:
+                    embed.description = "✅ " + "\n✅ ".join(success_details[:3])
+                else:
+                    embed.description = "✅ Your reservation was completed successfully!"
 
             embed.set_footer(text="You're all set! See you on the court 🏸")
 
@@ -3313,44 +3415,76 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
                 timestamp=datetime.now()
             )
 
-            # Try to find the actual error message
-            error_lines = []
-            for line in output_lines:
-                line_lower = line.lower()
-                if any(keyword in line_lower for keyword in ["error", "failed", "unavailable", "exception", "could not", "unable"]):
-                    clean_line = line.split("]")[-1].strip() if "]" in line else line
-                    error_lines.append(clean_line)
+            if result_data and not result_data.get("success"):
+                courts_tried = result_data.get("courts_tried", [])
+                total = result_data.get("total_attempts", 0)
+                timed_out_count = result_data.get("timed_out", 0)
+                reasons = result_data.get("failure_reasons", [])
 
-            if error_lines:
-                embed.description = "**What went wrong:**\n" + "\n".join(error_lines[-3:])  # Last 3 error lines
+                # Build friendly description
+                friendly_reasons = [_friendly_failure_reason(r) for r in reasons]
+                # Deduplicate
+                seen = set()
+                unique_reasons = [r for r in friendly_reasons if not (r in seen or seen.add(r))]
+
+                desc_parts = []
+                if courts_tried:
+                    desc_parts.append(f"**Courts tried:** {', '.join(courts_tried)}")
+                desc_parts.append(f"**Attempts:** {total}")
+                if timed_out_count:
+                    desc_parts.append(f"⚠️ {timed_out_count} request(s) timed out — booking may have succeeded, check manually!")
+                if unique_reasons:
+                    desc_parts.append("**Why it failed:**")
+                    for r in unique_reasons[:3]:
+                        desc_parts.append(f"• {r}")
+
+                embed.description = "\n".join(desc_parts)
             else:
-                # Fall back to last few lines
-                last_lines = "\n".join(output_lines[-5:])
-                embed.description = f"**Last output:**\n```\n{last_lines[:1000]}\n```"
+                # Fallback to log scraping
+                error_lines = []
+                for line in output_lines:
+                    line_lower = line.lower()
+                    if any(keyword in line_lower for keyword in ["error", "failed", "unavailable", "exception", "could not", "unable"]):
+                        clean_line = line.split("]")[-1].strip() if "]" in line else line
+                        error_lines.append(clean_line)
+
+                if error_lines:
+                    embed.description = "**What went wrong:**\n" + "\n".join(error_lines[-3:])
+                else:
+                    last_lines = "\n".join(output_lines[-5:])
+                    embed.description = f"**Last output:**\n```\n{last_lines[:1000]}\n```"
 
             embed.add_field(
                 name="💡 What to do",
-                value="Try running the command again, or check if the court/event is still available.",
+                value="Click **Try Again** below, or use `/book` with different parameters.",
                 inline=False
             )
-            embed.set_footer(text="Need help? Check the logs above for more details.")
+            embed.set_footer(text="Need help? Check the logs for more details.")
 
         # Upload log to paste service
         log_url = await upload_log_to_paste(output)
 
-        # Add log preview and full log button
-        view = FullLogView(output, task_name) if output else None
+        # Build view with log button + retry button on failure
+        view = discord.ui.View(timeout=None) if output else None
+        if view:
+            log_view = FullLogView(output, task_name)
+            for item in log_view.children:
+                view.add_item(item)
+            # Add retry button on failure for booking tasks
+            if process.returncode != 0 and "court_booking" in " ".join(cmd):
+                retry_view = RetryBookingView(cmd, task_name, task_desc or task_name, interaction)
+                for item in retry_view.children:
+                    view.add_item(item)
 
         if log_url:
             embed.add_field(name="📜 Full Log", value=f"🔗 {log_url}", inline=False)
         elif len(output) <= 800:
             embed.add_field(name="📜 Full Log", value=f"```\n{output}\n```", inline=False)
-            view = None  # No need for button if log fits
+            if process.returncode == 0:
+                view = None  # No need for buttons if log fits and succeeded
         elif len(output) <= 1500:
-            # Show truncated log with button for full
             embed.add_field(name="📜 Log (truncated)", value=f"```\n...{output[-700:]}\n```", inline=False)
         else:
-            # Show last few lines with button for full
             embed.add_field(name="📜 Log (truncated)", value=f"```\n...{output[-500:]}\n```", inline=False)
 
         # Send result via DM for privacy
