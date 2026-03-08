@@ -5,18 +5,19 @@ Parses session tokens from the reservation form HTML, constructs the full
 POST payload (with hardcoded player data and static fields), then fires
 direct HTTP POST requests to the CreateReservation API at click time.
 No form filling is needed -- only a single page load to get session tokens.
+
+Uses httpx with HTTP/2 so all requests multiplex over a single pre-warmed
+TCP+TLS connection, eliminating per-request handshake overhead.
 """
 
 import logging
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
-import requests
-from requests.adapters import HTTPAdapter
+import httpx
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ COURT_IDS = {
     "Pickleball Court #8B (Bubble B)": 25665,
 }
 
-CREATE_RESERVATION_URL = "https://reservations.courtreserve.com//Online/ReservationsApi/CreateReservation/8449"
+CREATE_RESERVATION_URL = "https://reservations.courtreserve.com/Online/ReservationsApi/CreateReservation/8449"
 
 # Hardcoded placeholder player data (same every booking)
 PLACEHOLDER_PLAYERS = [
@@ -247,88 +248,6 @@ def build_reservation_payload(
     return payload
 
 
-def submit_reservation(
-    payload: dict,
-    cookies: dict,
-    court_name: str,
-) -> dict:
-    """
-    Submit a single reservation via direct HTTP POST.
-
-    Returns a dict with:
-        - success: bool
-        - court: str
-        - response_status: int
-        - response_text: str (truncated)
-        - elapsed_ms: float
-    """
-    court_short = court_name.split()[2] if len(court_name.split()) > 2 else court_name
-
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "X-Requested-With": "XMLHttpRequest",
-        "Origin": "https://app.courtreserve.com",
-        "Referer": "https://app.courtreserve.com/",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-    }
-
-    start = time.time()
-    try:
-        resp = requests.post(
-            f"{CREATE_RESERVATION_URL}?uiCulture=en-US",
-            data=urlencode(payload, doseq=True),
-            cookies=cookies,
-            headers=headers,
-            timeout=30,
-        )
-        elapsed_ms = (time.time() - start) * 1000
-
-        response_text = resp.text[:2000]
-        log.info(f"  [{court_short}] HTTP {resp.status_code} in {elapsed_ms:.0f}ms")
-        log.info(f"  [{court_short}] Response: {resp.text[:200]}")
-
-        # Server returns JSON: {"isValid":true/false, "message":"...", ...}
-        is_success = False
-
-        if resp.status_code != 200:
-            log.warning(f"  [{court_short}] HTTP error: {resp.status_code}")
-        else:
-            try:
-                data = resp.json()
-                is_valid = data.get("isValid") or data.get("IsValid")
-                message = data.get("message") or data.get("Message") or ""
-                if is_valid:
-                    is_success = True
-                    log.info(f"  [{court_short}] ✓ BOOKED! {message}")
-                else:
-                    log.warning(f"  [{court_short}] ✗ Rejected: {message}")
-            except Exception:
-                # Not JSON - fall back to text analysis
-                log.warning(f"  [{court_short}] Non-JSON response: {resp.text[:200]}")
-
-        return {
-            "success": is_success,
-            "court": court_name,
-            "court_short": court_short,
-            "response_status": resp.status_code,
-            "response_text": response_text,
-            "elapsed_ms": elapsed_ms,
-        }
-
-    except Exception as e:
-        elapsed_ms = (time.time() - start) * 1000
-        log.error(f"  [{court_short}] Request failed: {e}")
-        return {
-            "success": False,
-            "court": court_name,
-            "court_short": court_short,
-            "response_status": 0,
-            "response_text": str(e),
-            "elapsed_ms": elapsed_ms,
-        }
-
-
 def fire_parallel_bookings(
     base_tokens: dict,
     cookies: dict,
@@ -343,6 +262,9 @@ def fire_parallel_bookings(
     """
     Fire parallel booking requests at the target time.
 
+    Uses httpx with HTTP/2 so all requests multiplex over a single
+    TCP+TLS connection (pre-warmed during countdown).
+
     Args:
         base_tokens: Form fields from extract_booking_tokens()
         cookies: Session cookies from extract_cookies_from_context()
@@ -353,8 +275,9 @@ def fire_parallel_bookings(
         target_time: When to fire the requests
         stagger_ms: Optional list of offsets in ms (e.g., [-500, -250, 0])
                     If None, fires all at once at target_time
+        dry_run: If True, log what would happen without sending requests
 
-    Returns list of result dicts from submit_reservation()
+    Returns list of result dicts.
     """
     if stagger_ms is None:
         stagger_ms = [0]
@@ -411,6 +334,30 @@ def fire_parallel_bookings(
                  "offset_ms": o}
                 for c, cs, _, o, _, _ in payloads]
 
+    # Group payloads by offset for staggered firing
+    by_offset = {}
+    for court_name, court_short, court_id, offset_ms, payload, encoded in payloads:
+        by_offset.setdefault(offset_ms, []).append((court_name, court_short, court_id, encoded))
+
+    all_results = []
+
+    # httpx with HTTP/2: all requests multiplex over a single TCP+TLS connection.
+    # No connection pool sizing needed — HTTP/2 handles concurrent streams natively.
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "Origin": "https://app.courtreserve.com",
+        "Referer": "https://app.courtreserve.com/",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+    }
+    client = httpx.Client(
+        http2=True,
+        timeout=60,
+        headers=headers,
+        cookies=cookies,
+    )
+
     # Wait until target time
     delay = (target_time - datetime.now()).total_seconds()
     if delay > 0:
@@ -424,6 +371,12 @@ def fire_parallel_bookings(
         earliest_offset_s = min(stagger_ms) / 1000.0
         earliest_fire_time = target_time + timedelta(seconds=earliest_offset_s)
 
+        # TLS warmup: attempt ~60s before fire time with a hard timeout
+        # so it can never delay firing. With HTTP/2 this warms the ONE
+        # connection that all requests will multiplex over.
+        warmup_time = earliest_fire_time - timedelta(seconds=60)
+        tls_warmed = False
+
         sleep_until = (earliest_fire_time - datetime.now()).total_seconds() - 0.05
         if sleep_until > 0:
             # Log countdown
@@ -432,6 +385,29 @@ def fire_parallel_bookings(
                 remaining = (earliest_fire_time - datetime.now()).total_seconds()
                 if remaining <= 0.05:
                     break
+
+                # TLS warmup at ~60s before fire time
+                if not tls_warmed and datetime.now() >= warmup_time:
+                    tls_warmed = True
+                    # Hard timeout: at most 50s, but also leave 5s buffer before fire time
+                    max_timeout = min(50, max(1, remaining - 5))
+                    log.info(f"Pre-warming HTTP/2 connection (timeout={max_timeout:.0f}s)...")
+                    try:
+                        warmup_start = time.time()
+                        warmup_resp = client.head(
+                            f"{CREATE_RESERVATION_URL}?uiCulture=en-US",
+                            timeout=max_timeout,
+                        )
+                        warmup_ms = (time.time() - warmup_start) * 1000
+                        log.info(f"  Connection established in {warmup_ms:.0f}ms (protocol: {warmup_resp.http_version})")
+                    except Exception as e:
+                        log.warning(f"  Pre-warm failed (non-fatal): {e}")
+
+                    # Re-apply Playwright cookies to avoid contamination from
+                    # Cloudflare cookies set during the warmup HEAD request
+                    client.cookies.clear()
+                    client.cookies.update(cookies)
+
                 remaining_int = int(remaining)
                 if last_log is None or (remaining_int % 30 == 0 and remaining_int != last_log) or remaining <= 10:
                     h = int(remaining // 3600)
@@ -447,54 +423,13 @@ def fire_parallel_bookings(
 
     log.info(f"FIRING {total} booking requests!")
 
-    # Group payloads by offset for staggered firing
-    by_offset = {}
-    for court_name, court_short, court_id, offset_ms, payload, encoded in payloads:
-        by_offset.setdefault(offset_ms, []).append((court_name, court_short, court_id, encoded))
-
-    all_results = []
-
-    # Use a shared session for connection reuse.
-    # pool_maxsize = number of courts (max concurrent requests per offset batch).
-    # pool_block=True makes threads wait for a connection instead of creating/discarding
-    # new ones (fixes "Connection pool is full, discarding connection" warnings).
-    session = requests.Session()
-    adapter = HTTPAdapter(
-        pool_connections=1,             # single host
-        pool_maxsize=len(courts),       # one connection per court (offsets fire sequentially)
-        pool_block=True,                # block instead of discarding connections
-    )
-    session.mount("https://", adapter)
-    session.cookies.update(cookies)
-    session.headers.update({
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "X-Requested-With": "XMLHttpRequest",
-        "Origin": "https://app.courtreserve.com",
-        "Referer": "https://app.courtreserve.com/",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-    })
-
-    # Pre-warm the TLS connection so booking POSTs reuse an established socket
-    # instead of paying DNS + TCP + TLS handshake (~200-400ms) on the first request.
-    log.info("Pre-warming TLS connection to reservations server...")
-    try:
-        warmup_start = time.time()
-        session.head(
-            f"{CREATE_RESERVATION_URL}?uiCulture=en-US",
-            timeout=10,
-        )
-        warmup_ms = (time.time() - warmup_start) * 1000
-        log.info(f"  TLS connection established in {warmup_ms:.0f}ms")
-    except Exception as e:
-        log.warning(f"  TLS pre-warm failed (non-fatal): {e}")
-
     # Event to signal early cancellation once a booking succeeds
     success_event = threading.Event()
+    # Log protocol version on the first response
+    protocol_logged = threading.Event()
 
     def _submit(court_name, court_short, encoded_payload, offset_ms):
-        """Submit via the shared session. Skips if another thread already succeeded."""
-        # Check early-exit before doing any work
+        """Submit via the shared HTTP/2 client. Skips if another thread already succeeded."""
         if success_event.is_set():
             return {
                 "success": False, "court": court_name, "court_short": court_short,
@@ -504,14 +439,16 @@ def fire_parallel_bookings(
 
         start = time.time()
         try:
-            resp = session.post(
+            resp = client.post(
                 f"{CREATE_RESERVATION_URL}?uiCulture=en-US",
-                data=encoded_payload,
-                timeout=60,
+                content=encoded_payload.encode(),
             )
             elapsed_ms = (time.time() - start) * 1000
 
-            # Server returns JSON: {"isValid":true/false, "message":"..."}
+            if not protocol_logged.is_set():
+                protocol_logged.set()
+                log.info(f"  Protocol: {resp.http_version}")
+
             is_success = False
             message = ""
             if resp.status_code == 200:
@@ -567,5 +504,5 @@ def fire_parallel_bookings(
             log.info(f"  [{result['court_short']}@{result['offset_ms']:+d}ms] {status} - HTTP {result['response_status']} in {result['elapsed_ms']:.0f}ms")
             all_results.append(result)
 
-    session.close()
+    client.close()
     return all_results
