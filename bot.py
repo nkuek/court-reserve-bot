@@ -24,6 +24,7 @@ import sys
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
@@ -62,6 +63,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 log = logging.getLogger(__name__)
+LOCAL_TZ = ZoneInfo("America/New_York")
 
 # Bot setup
 intents = discord.Intents.default()
@@ -2754,13 +2756,15 @@ async def schedule_next_run(sched: dict):
     is_one_time = sched.get("one_time") or False
     run_at = sched.get("run_at")
 
-    # Calculate seconds until next run
-    now = datetime.now()
+    # Calculate seconds until next run (timezone-aware to handle DST correctly)
+    now = datetime.now(LOCAL_TZ)
     today_str = now.strftime("%Y-%m-%d")
 
     if is_one_time and run_at:
         try:
             next_run = datetime.fromisoformat(run_at)
+            if next_run.tzinfo is None:
+                next_run = next_run.replace(tzinfo=LOCAL_TZ)
         except Exception:
             log.error(f"Schedule #{schedule_id}: Invalid run_at format '{run_at}', deleting schedule")
             admin_delete_schedule(schedule_id)
@@ -2778,7 +2782,7 @@ async def schedule_next_run(sched: dict):
         target_hour = sched["hour"]
         target_minute = sched["minute"]
 
-        # Build target datetime for this week
+        # Build target datetime for this week (tz-aware for correct DST handling)
         target_time_today = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
 
         # Calculate days until target day
