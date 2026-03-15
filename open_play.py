@@ -449,13 +449,23 @@ def _run_once(
         )
 
     # Check disclosure checkbox if present (required before finalizing)
-    disclosure_checkbox = page.locator('[data-testid="disclosure-agree-checkbox"]')
-    if disclosure_checkbox.count() > 0 and disclosure_checkbox.is_visible():
-        if not disclosure_checkbox.is_checked():
-            disclosure_checkbox.check()
-            log.info("  Checked disclosure agreement checkbox")
-        else:
-            log.info("  Disclosure checkbox already checked")
+    # Use JavaScript to check it — Kendo UI's kendoCheckBox widget can make
+    # the raw <input> fail Playwright's is_visible() check, so force=True
+    # or JS is needed.
+    disclosure_checked = page.evaluate("""() => {
+        const cb = document.getElementById('DisclosureAgree');
+        if (!cb) return 'not_found';
+        if (cb.checked) return 'already_checked';
+        cb.checked = true;
+        cb.dispatchEvent(new Event('change', { bubbles: true }));
+        return 'checked';
+    }""")
+    if disclosure_checked == 'checked':
+        log.info("  Checked disclosure agreement checkbox")
+    elif disclosure_checked == 'already_checked':
+        log.info("  Disclosure checkbox already checked")
+    else:
+        log.info("  No disclosure checkbox found")
 
     finalize_button.click()
 
