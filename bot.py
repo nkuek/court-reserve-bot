@@ -3035,6 +3035,7 @@ async def run_scheduled_script(cmd: list[str], task_name: str, discord_id: int, 
     try:
         env = os.environ.copy()
         env["HEADLESS"] = "true"
+        env["ENABLE_TRACING"] = "true"
 
         process = await asyncio.create_subprocess_exec(
             *cmd,
