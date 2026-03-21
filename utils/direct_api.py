@@ -6,8 +6,9 @@ POST payload (with hardcoded player data and static fields), then fires
 direct HTTP POST requests to the CreateReservation API at click time.
 No form filling is needed -- only a single page load to get session tokens.
 
-Uses httpx with HTTP/2 so all requests multiplex over a single pre-warmed
-TCP+TLS connection, eliminating per-request handshake overhead.
+Uses separate httpx HTTP/2 clients per stagger offset so each request gets
+its own TCP+TLS connection, independently routed by Cloudflare's load
+balancer across multiple backend servers.
 """
 
 import logging
@@ -266,8 +267,10 @@ def fire_parallel_bookings(
     """
     Fire parallel booking requests at the target time.
 
-    Uses httpx with HTTP/2 so all requests multiplex over a single
-    TCP+TLS connection (pre-warmed during countdown).
+    Creates one httpx HTTP/2 client per stagger offset, each with its own
+    TCP+TLS connection. Cloudflare's load balancer routes each connection
+    independently across backend servers (__cflb cookie is stripped).
+    Connections are pre-warmed concurrently during countdown.
 
     Args:
         base_tokens: Form fields from extract_booking_tokens()
@@ -286,7 +289,7 @@ def fire_parallel_bookings(
     if stagger_ms is None:
         stagger_ms = [0]
 
-    # Pre-build all payloads (encode once, reuse across offsets)
+    # Pre-build all payloads (encode once to bytes, reuse across offsets)
     payloads = []
     for court_name, court_id in courts:
         payload = build_reservation_payload(
@@ -297,7 +300,7 @@ def fire_parallel_bookings(
             start_time_str=start_time_str,
             duration_minutes=duration_minutes,
         )
-        encoded = urlencode(payload, doseq=True)
+        encoded = urlencode(payload, doseq=True).encode()
         court_short = court_name.split()[2] if len(court_name.split()) > 2 else court_name
         for offset_ms in stagger_ms:
             payloads.append((court_name, court_short, court_id, offset_ms, payload, encoded))
@@ -313,6 +316,8 @@ def fire_parallel_bookings(
         log.info("=" * 50)
         log.info(f"  Would fire {total} POSTs to: {CREATE_RESERVATION_URL}")
         log.info(f"  Cookies: {len(cookies)} cookies available")
+        log.info(f"  Would strip __cflb cookie for backend distribution")
+        log.info(f"  Would create {len(stagger_ms)} HTTP/2 clients (1 per offset)")
         log.info(f"  Stagger: {stagger_ms}")
         log.info("")
 
@@ -345,8 +350,13 @@ def fire_parallel_bookings(
 
     all_results = []
 
-    # httpx with HTTP/2: all requests multiplex over a single TCP+TLS connection.
-    # No connection pool sizing needed — HTTP/2 handles concurrent streams natively.
+    # Strip Cloudflare load-balancer pinning cookie so each client gets
+    # independently routed to a backend. Keep __cf_bm (bot management)
+    # to avoid triggering JS challenges.
+    filtered_cookies = {k: v for k, v in cookies.items() if k != "__cflb"}
+    if "__cflb" in cookies:
+        log.info(f"  Stripped __cflb cookie for backend distribution (was: {cookies['__cflb'][:20]}...)")
+
     headers = {
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         "X-Requested-With": "XMLHttpRequest",
@@ -355,12 +365,22 @@ def fire_parallel_bookings(
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "*/*",
     }
-    client = httpx.Client(
-        http2=True,
-        timeout=60,
-        headers=headers,
-        cookies=cookies,
-    )
+
+    # One HTTP/2 client per stagger offset — each gets its own TCP+TLS
+    # connection, independently routed by Cloudflare across backends.
+    # keepalive_expiry=120 ensures warmed connections survive the ~60s
+    # gap between warmup and firing (default 5s was silently killing them).
+    sorted_offsets = sorted(stagger_ms)
+    clients: dict[int, httpx.Client] = {}
+    for offset_ms in sorted_offsets:
+        clients[offset_ms] = httpx.Client(
+            http2=True,
+            timeout=60,
+            headers=headers,
+            cookies=filtered_cookies,
+            limits=httpx.Limits(keepalive_expiry=120),
+        )
+    log.info(f"Created {len(clients)} HTTP/2 clients for backend distribution")
 
     # Wait until target time
     delay = (target_time - datetime.now()).total_seconds()
@@ -376,8 +396,9 @@ def fire_parallel_bookings(
         earliest_fire_time = target_time + timedelta(seconds=earliest_offset_s)
 
         # TLS warmup: attempt ~60s before fire time with a hard timeout
-        # so it can never delay firing. With HTTP/2 this warms the ONE
-        # connection that all requests will multiplex over.
+        # so it can never delay firing. Each client gets its own HEAD
+        # request to establish an independent connection to (potentially)
+        # a different Cloudflare backend.
         warmup_time = earliest_fire_time - timedelta(seconds=60)
         tls_warmed = False
 
@@ -395,22 +416,37 @@ def fire_parallel_bookings(
                     tls_warmed = True
                     # Hard timeout: at most 50s, but also leave 5s buffer before fire time
                     max_timeout = min(50, max(1, remaining - 5))
-                    log.info(f"Pre-warming HTTP/2 connection (timeout={max_timeout:.0f}s)...")
-                    try:
-                        warmup_start = time.time()
-                        warmup_resp = client.head(
-                            f"{CREATE_RESERVATION_URL}?uiCulture=en-US",
-                            timeout=max_timeout,
-                        )
-                        warmup_ms = (time.time() - warmup_start) * 1000
-                        log.info(f"  Connection established in {warmup_ms:.0f}ms (protocol: {warmup_resp.http_version})")
-                    except Exception as e:
-                        log.warning(f"  Pre-warm failed (non-fatal): {e}")
+                    log.info(f"Pre-warming {len(clients)} HTTP/2 connections (timeout={max_timeout:.0f}s)...")
 
-                    # Re-apply Playwright cookies to avoid contamination from
-                    # Cloudflare cookies set during the warmup HEAD request
-                    client.cookies.clear()
-                    client.cookies.update(cookies)
+                    def _warmup_one(offset_ms, c):
+                        try:
+                            ws = time.time()
+                            wr = c.head(
+                                f"{CREATE_RESERVATION_URL}?uiCulture=en-US",
+                                timeout=max_timeout,
+                            )
+                            wms = (time.time() - ws) * 1000
+                            cflb_val = c.cookies.get("__cflb", "none")
+                            cf_ray = wr.headers.get("cf-ray", "N/A")
+                            log.info(f"  [{offset_ms:+d}ms] {wms:.0f}ms {wr.http_version} __cflb={cflb_val[:20]} cf-ray={cf_ray}")
+                            return offset_ms, True
+                        except Exception as e:
+                            log.warning(f"  [{offset_ms:+d}ms] warmup failed (non-fatal): {e}")
+                            return offset_ms, False
+
+                    with ThreadPoolExecutor(max_workers=len(clients)) as warmup_exec:
+                        warmup_futures = [
+                            warmup_exec.submit(_warmup_one, oms, c)
+                            for oms, c in clients.items()
+                        ]
+                        for f in as_completed(warmup_futures):
+                            f.result()
+
+                    # Re-apply Playwright cookies (sans __cflb) to avoid
+                    # contamination from Cloudflare cookies set during warmup
+                    for c in clients.values():
+                        c.cookies.clear()
+                        c.cookies.update(filtered_cookies)
 
                 remaining_int = int(remaining)
                 if last_log is None or (remaining_int % 30 == 0 and remaining_int != last_log) or remaining <= 10:
@@ -421,19 +457,27 @@ def fire_parallel_bookings(
                     last_log = remaining_int
                 time.sleep(min(1.0, remaining - 0.05))
 
-        # Busy-wait for precise timing
-        while datetime.now() < earliest_fire_time:
+        # Busy-wait for precise timing using perf_counter (monotonic,
+        # no heap allocations per iteration unlike datetime.now())
+        anchor_wall = datetime.now()
+        anchor_pc = time.perf_counter()
+        target_pc = anchor_pc + (earliest_fire_time - anchor_wall).total_seconds()
+        while time.perf_counter() < target_pc:
             pass
+
+    else:
+        # No delay — anchor perf_counter to now for stagger timing
+        anchor_wall = datetime.now()
+        anchor_pc = time.perf_counter()
+        target_pc = anchor_pc  # target_time is in the past or now
 
     log.info(f"FIRING {total} booking requests!")
 
     # Event to signal early cancellation once a booking succeeds
     success_event = threading.Event()
-    # Log protocol version on the first response
-    protocol_logged = threading.Event()
 
-    def _submit(court_name, court_short, encoded_payload, offset_ms):
-        """Submit via the shared HTTP/2 client. Skips if another thread already succeeded."""
+    def _submit(client, court_name, court_short, encoded_payload, offset_ms):
+        """Submit via the given HTTP/2 client. Skips if another thread already succeeded."""
         if success_event.is_set():
             return {
                 "success": False, "court": court_name, "court_short": court_short,
@@ -445,13 +489,11 @@ def fire_parallel_bookings(
         try:
             resp = client.post(
                 f"{CREATE_RESERVATION_URL}?uiCulture=en-US",
-                content=encoded_payload.encode(),
+                content=encoded_payload,
             )
             elapsed_ms = (time.time() - start) * 1000
 
-            if not protocol_logged.is_set():
-                protocol_logged.set()
-                log.info(f"  Protocol: {resp.http_version}")
+            cf_ray = resp.headers.get("cf-ray", "")
 
             is_success = False
             message = ""
@@ -472,33 +514,48 @@ def fire_parallel_bookings(
                 "response_status": resp.status_code,
                 "response_text": message or resp.text[:500],
                 "elapsed_ms": elapsed_ms, "offset_ms": offset_ms,
+                "cf_ray": cf_ray,
             }
         except Exception as e:
             return {
                 "success": False, "court": court_name, "court_short": court_short,
                 "response_status": 0, "response_text": str(e),
                 "elapsed_ms": (time.time() - start) * 1000, "offset_ms": offset_ms,
+                "cf_ray": "",
             }
+
+    # Compute perf_counter target for each offset (for sub-ms stagger timing)
+    # target_pc corresponds to target_time; offsets are relative to that
+    offset_pc = {oms: target_pc + oms / 1000.0 for oms in sorted_offsets}
 
     # Fire all requests in parallel using threads
     with ThreadPoolExecutor(max_workers=total) as executor:
+        # Pre-warm worker threads so creation overhead doesn't affect firing
+        warmup_futs = [executor.submit(lambda: None) for _ in range(total)]
+        for f in warmup_futs:
+            f.result()
+
         futures = []
-        for offset_ms in sorted(by_offset.keys()):
-            # Wait for this offset's fire time
-            fire_time = target_time + timedelta(milliseconds=offset_ms)
-            now = datetime.now()
-            if fire_time > now:
-                wait = (fire_time - now).total_seconds()
-                if wait > 0:
-                    time.sleep(wait)
+        for offset_ms in sorted_offsets:
+            # Wait for this offset's fire time using perf_counter
+            fire_target_pc = offset_pc[offset_ms]
+            now_pc = time.perf_counter()
+            if fire_target_pc > now_pc:
+                gap = fire_target_pc - now_pc
+                if gap > 0.002:  # >2ms: sleep most, then spin
+                    time.sleep(gap - 0.001)
+                while time.perf_counter() < fire_target_pc:
+                    pass
 
             fire_actual = datetime.now()
-            diff = (fire_actual - fire_time).total_seconds() * 1000
+            fire_time_wall = target_time + timedelta(milliseconds=offset_ms)
+            diff = (fire_actual - fire_time_wall).total_seconds() * 1000
             diff_str = f" (diff: {diff:+.1f}ms)" if abs(diff) < 60000 else ""
             log.info(f"  Firing offset {offset_ms:+d}ms at {fire_actual.strftime('%H:%M:%S.%f')[:-3]}{diff_str}")
 
+            c = clients[offset_ms]
             for court_name, court_short, court_id, encoded in by_offset[offset_ms]:
-                futures.append(executor.submit(_submit, court_name, court_short, encoded, offset_ms))
+                futures.append(executor.submit(_submit, c, court_name, court_short, encoded, offset_ms))
 
         # Collect results as they complete
         for future in as_completed(futures):
@@ -506,8 +563,10 @@ def fire_parallel_bookings(
             if result.get("cancelled"):
                 continue
             status = "SUCCESS" if result["success"] else "FAILED"
-            log.info(f"  [{result['court_short']}@{result['offset_ms']:+d}ms] {status} - HTTP {result['response_status']} in {result['elapsed_ms']:.0f}ms")
+            cf_ray_tag = f" cf-ray={result['cf_ray']}" if result.get("cf_ray") else ""
+            log.info(f"  [{result['court_short']}@{result['offset_ms']:+d}ms] {status} - HTTP {result['response_status']} in {result['elapsed_ms']:.0f}ms{cf_ray_tag}")
             all_results.append(result)
 
-    client.close()
+    for c in clients.values():
+        c.close()
     return all_results
