@@ -1108,8 +1108,9 @@ def main(
         start_time_str = f"{hour:02d}:{minute:02d}:00"
 
         # Fire parallel HTTP requests at target time
-        stagger_offsets = [-750, -500, -250, 0]
-
+        # All clients fire at T-750ms for maximum queue priority.
+        # num_clients=4 creates 4 independent HTTP/2 connections for
+        # backend diversity across Cloudflare's load balancer.
         results = fire_parallel_bookings(
             base_tokens=session_tokens,
             cookies=cookies,
@@ -1118,9 +1119,13 @@ def main(
             start_time_str=start_time_str,
             duration_minutes=duration_minutes,
             target_time=target,
-            stagger_ms=stagger_offsets,
+            stagger_ms=[-750],
+            num_clients=4,
             dry_run=dry_run,
         )
+
+        if dry_run:
+            return
 
         # Report results
         successes = [r for r in results if r.get("success")]
@@ -1135,13 +1140,15 @@ def main(
             log.info("")
             log.info("  ✓ SUCCESSFUL BOOKINGS:")
             for r in successes:
-                log.info(f"     ✓ {r['court_short']}@{r['offset_ms']:+d}ms - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms")
+                ci = r.get('client_idx', '?')
+                log.info(f"     ✓ {r['court_short']}@c{ci} - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms")
 
         if failures:
             log.info("")
             log.info("  ✗ FAILED ATTEMPTS:")
             for r in failures:
-                log.info(f"     ✗ {r['court_short']}@{r['offset_ms']:+d}ms - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms: {r['response_text'][:80]}")
+                ci = r.get('client_idx', '?')
+                log.info(f"     ✗ {r['court_short']}@c{ci} - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms: {r['response_text'][:80]}")
 
         log.info("")
         log.info(f"  Summary: {len(successes)} succeeded, {len(failures)} failed out of {len(results)} attempts")
