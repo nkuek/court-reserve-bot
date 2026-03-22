@@ -89,13 +89,16 @@ def is_admin(user_id: int) -> bool:
 async def upload_log_to_paste(log_content: str) -> str | None:
     """Upload log content to a paste service and return the URL.
 
-    Returns None silently if all services fail -- callers should
-    fall back to Discord file attachments.
+    Tries GitHub Gist first (permanent, accessible for debugging),
+    then falls back to paste.rs/dpaste. Returns None silently if
+    all services fail -- callers should fall back to Discord file
+    attachments.
     """
     if not log_content or not log_content.strip():
         return None
 
     services = [
+        ("GitHub Gist", _upload_github_gist),
         ("https://paste.rs/", _upload_paste_rs),
         ("https://dpaste.org/api/", _upload_dpaste),
     ]
@@ -110,6 +113,58 @@ async def upload_log_to_paste(log_content: str) -> str | None:
             log.debug(f"Paste upload to {name} failed: {e}")
 
     log.debug("No paste services available, using Discord file attachment")
+    return None
+
+
+async def _get_github_token() -> str | None:
+    """Get GitHub token from environment or gh CLI."""
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        return token
+    # Fall back to gh CLI auth token
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "gh", "auth", "token",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if proc.returncode == 0 and stdout:
+            return stdout.decode().strip()
+    except Exception:
+        pass
+    return None
+
+
+async def _upload_github_gist(log_content: str) -> str | None:
+    """Upload to GitHub Gist (permanent, accessible for debugging)."""
+    token = await _get_github_token()
+    if not token:
+        return None
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"court_booking_log_{timestamp}.txt"
+
+    payload = {
+        "description": f"Court booking log {timestamp}",
+        "public": False,
+        "files": {filename: {"content": log_content}},
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://api.github.com/gists",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "CourtBookingBot/1.0",
+            },
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            if resp.status == 201:
+                data = await resp.json()
+                return data.get("html_url")
     return None
 
 
