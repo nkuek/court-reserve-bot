@@ -136,34 +136,64 @@ async def _get_github_token() -> str | None:
     return None
 
 
+# Persistent gist ID — all booking logs accumulate as files in this single gist.
+# Set via BOOKING_LOG_GIST_ID env var, or created automatically on first run.
+_log_gist_id: str | None = os.environ.get("BOOKING_LOG_GIST_ID")
+
+
 async def _upload_github_gist(log_content: str) -> str | None:
-    """Upload to GitHub Gist (permanent, accessible for debugging)."""
+    """Append a log file to the persistent GitHub Gist.
+
+    All logs accumulate in a single gist as separate files, named by
+    timestamp. The gist is created on first run if BOOKING_LOG_GIST_ID
+    is not set, and the ID is cached for subsequent runs.
+    """
+    global _log_gist_id
     token = await _get_github_token()
     if not token:
         return None
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"court_booking_log_{timestamp}.txt"
-
-    payload = {
-        "description": f"Court booking log {timestamp}",
-        "public": False,
-        "files": {filename: {"content": log_content}},
+    filename = f"log_{timestamp}.txt"
+    gh_headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "CourtBookingBot/1.0",
     }
 
     async with aiohttp.ClientSession() as session:
+        if _log_gist_id:
+            # Append a new file to the existing gist
+            async with session.patch(
+                f"https://api.github.com/gists/{_log_gist_id}",
+                json={"files": {filename: {"content": log_content}}},
+                headers=gh_headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("html_url")
+                # If the gist was deleted, fall through to create a new one
+                if resp.status != 404:
+                    return None
+                _log_gist_id = None
+
+        # Create a new gist (first run or previous gist was deleted)
         async with session.post(
             "https://api.github.com/gists",
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "CourtBookingBot/1.0",
+            json={
+                "description": "Court booking bot logs",
+                "public": False,
+                "files": {filename: {"content": log_content}},
             },
+            headers=gh_headers,
             timeout=aiohttp.ClientTimeout(total=15),
         ) as resp:
             if resp.status == 201:
                 data = await resp.json()
+                _log_gist_id = data["id"]
+                log.info(f"Created new log gist: {data['html_url']}")
+                log.info(f"  Set BOOKING_LOG_GIST_ID={_log_gist_id} to reuse across restarts")
                 return data.get("html_url")
     return None
 
