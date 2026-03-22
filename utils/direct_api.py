@@ -492,6 +492,8 @@ def fire_parallel_bookings(
                 elapsed_ms = (time.time() - start) * 1000
 
                 cf_ray = resp.headers.get("cf-ray", "")
+                server_date = resp.headers.get("date", "")
+                http_ver = resp.http_version
 
                 is_success = False
                 message = ""
@@ -503,6 +505,10 @@ def fire_parallel_bookings(
                         is_success = bool(is_valid)
                     except Exception:
                         message = resp.text[:200]
+                elif resp.status_code == 403:
+                    message = f"BLOCKED (likely Cloudflare challenge): {resp.text[:200]}"
+                elif resp.status_code == 429:
+                    message = f"RATE LIMITED: {resp.text[:200]}"
 
                 if is_success:
                     success_event.set()
@@ -513,6 +519,7 @@ def fire_parallel_bookings(
                     "response_text": message or resp.text[:500],
                     "elapsed_ms": elapsed_ms, "offset_ms": fire_offset_ms,
                     "client_idx": client_idx, "cf_ray": cf_ray,
+                    "http_version": http_ver, "server_date": server_date,
                 }
             except Exception as e:
                 return {
@@ -550,6 +557,25 @@ def fire_parallel_bookings(
                 cf_ray_tag = f" cf-ray={result['cf_ray']}" if result.get("cf_ray") else ""
                 log.info(f"  [{result['court_short']}@c{result['client_idx']}] {status} - HTTP {result['response_status']} in {result['elapsed_ms']:.0f}ms{cf_ray_tag}")
                 all_results.append(result)
+
+        # Log diagnostic summary
+        if all_results:
+            backends = set()
+            http_versions = set()
+            for r in all_results:
+                ray = r.get("cf_ray", "")
+                if ray:
+                    # cf-ray suffix (e.g., "b83d-IAD") identifies the edge worker
+                    backends.add(ray.rsplit("-", 1)[-1] + ":" + ray[-16:-4] if len(ray) > 16 else ray)
+                http_versions.add(r.get("http_version", "?"))
+            elapsed_all = [r["elapsed_ms"] for r in all_results]
+            server_dates = [r.get("server_date", "") for r in all_results if r.get("server_date")]
+            log.info(f"  Diagnostics: {len(all_results)} responses, "
+                     f"{len(backends)} distinct cf-ray prefixes, "
+                     f"protocols={http_versions}, "
+                     f"elapsed={min(elapsed_all):.0f}-{max(elapsed_all):.0f}ms")
+            if server_dates:
+                log.info(f"  Server date (first response): {server_dates[0]}")
 
     finally:
         for c in clients:
