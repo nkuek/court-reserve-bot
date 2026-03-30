@@ -1089,18 +1089,67 @@ def main(
             notify_failure("Direct API: no court IDs found")
             raise typer.Exit(1)
 
-        # Extract cookies from the browser context
+        # Extract cookies and User-Agent from the browser context
         context = get_context()
         cookies = extract_cookies_from_context(context)
+        user_agent = page.evaluate("() => navigator.userAgent")
 
         log.info(f"\nWill try {len(courts_with_ids)} court(s) via direct API:")
         for name, cid in courts_with_ids:
             short = name.split()[2]
             log.info(f"  {short} (ID: {cid})")
 
-        # Close the browser - we only need HTTP from here
-        log.info("\nBrowser setup complete, closing browser...")
-        close_browser()
+        # Build CAPTCHA solver callback if CAPTCHA is enabled for this account.
+        # The reCAPTCHA token has a ~2 min TTL, so we solve it at ~T-90s
+        # (right before TLS warmup) rather than now. The browser stays open
+        # until the callback fires; if no CAPTCHA is needed, close immediately.
+        captcha_needed = session_tokens.get("IsCaptchaEnabledForPlayer") == "True"
+        captcha_callback = None
+
+        if captcha_needed:
+            log.info("  CAPTCHA enabled for this account — will solve at ~T-90s")
+            # The first court in our list is used to reopen the form for CAPTCHA
+            captcha_court_name = courts_with_ids[0][0]
+
+            def _solve_captcha():
+                """Reopen form, solve reCAPTCHA, return token. Called at ~T-90s."""
+                try:
+                    log.info("  Solving reCAPTCHA...")
+                    check_court_availability(
+                        captcha_court_name, reservation_time, end_time,
+                    )
+                    page.wait_for_selector(
+                        "iframe[src*='recaptcha']", state="attached", timeout=10000,
+                    )
+                    recaptcha_frame = page.frame_locator(
+                        "iframe[src*='recaptcha']"
+                    )
+                    recaptcha_frame.locator("#recaptcha-anchor").click(timeout=10000)
+                    page.wait_for_function(
+                        "() => document.getElementById('Token') "
+                        "&& document.getElementById('Token').value.length > 0",
+                        timeout=30000,
+                    )
+                    token = page.evaluate(
+                        "() => document.getElementById('Token').value"
+                    )
+                    log.info(f"  CAPTCHA solved (token: {token[:40]}...)")
+                    # Close form and browser
+                    close_btn = page.locator('button[data-testid="Close"]')
+                    if close_btn.count() > 0:
+                        close_btn.click()
+                    close_browser()
+                    return token
+                except Exception as e:
+                    log.warning(f"  CAPTCHA solve failed: {e}")
+                    close_browser()
+                    return None
+
+            captcha_callback = _solve_captcha
+        else:
+            # No CAPTCHA — close browser immediately
+            log.info("\nBrowser setup complete, closing browser...")
+            close_browser()
 
         # Convert duration to minutes
         duration_minutes = int(duration * 60)
@@ -1108,9 +1157,7 @@ def main(
         start_time_str = f"{hour:02d}:{minute:02d}:00"
 
         # Fire parallel HTTP requests at target time
-        # All clients fire at T-750ms for maximum queue priority.
-        # num_clients=4 creates 4 independent HTTP/2 connections for
-        # backend diversity across Cloudflare's load balancer.
+        # num_clients=2 for backend diversity with reduced footprint.
         results = fire_parallel_bookings(
             base_tokens=session_tokens,
             cookies=cookies,
@@ -1119,12 +1166,14 @@ def main(
             start_time_str=start_time_str,
             duration_minutes=duration_minutes,
             target_time=target,
-            stagger_ms=[-750],
-            num_clients=4,
             dry_run=dry_run,
+            user_agent=user_agent,
+            captcha_callback=captcha_callback,
         )
 
         if dry_run:
+            if captcha_needed:
+                close_browser()
             return
 
         # Report results
