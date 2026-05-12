@@ -33,9 +33,11 @@ COURT_IDS = {
     "Pickleball Court 5A (Bubble B)": 36534,
     "Pickleball Court 5B (Bubble B)": 36535,
     "Pickleball Court 5C (Bubble B)": 36536,
+    "Pickleball Court 5D (Bubble B)": 78022,
     "Pickleball Court 6A (Bubble B)": 36537,
     "Pickleball Court 6B (Bubble B)": 36538,
     "Pickleball Court 6C (Bubble B)": 36539,
+    "Pickleball Court 6D (Bubble B)": 78023,
     "Pickleball Court #7A (Bubble B)": None,   # Discovered at runtime
     "Pickleball Court #7B (Bubble B)": 25663,
     "Pickleball Court #8A (Bubble B)": 25664,
