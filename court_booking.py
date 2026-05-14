@@ -79,6 +79,36 @@ def validate_duration(value: float) -> float:
     return value
 
 
+def parse_direct_offsets(value: str) -> list[int]:
+    """Parse comma-separated millisecond offsets for direct API firing."""
+    offsets = []
+    for raw in value.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            offsets.append(int(raw))
+        except ValueError:
+            raise typer.BadParameter(
+                f"Invalid --direct-offsets value '{raw}'. Use comma-separated milliseconds, e.g. -1000,-750,-500,-250,0"
+            )
+
+    if not offsets:
+        raise typer.BadParameter("--direct-offsets must include at least one offset")
+    if len(offsets) > 8:
+        raise typer.BadParameter("--direct-offsets supports at most 8 offsets to keep request volume bounded")
+
+    out_of_range = [o for o in offsets if o < -3000 or o > 3000]
+    if out_of_range:
+        raise typer.BadParameter(
+            f"--direct-offsets values must be between -3000 and +3000ms. Out of range: {out_of_range}"
+        )
+
+    # Preserve order but drop duplicates.
+    seen = set()
+    return [o for o in offsets if not (o in seen or seen.add(o))]
+
+
 def to_12_hour(time_str: str | datetime) -> str:
     """Convert 24-hour time to 12-hour format."""
     if isinstance(time_str, str):
@@ -833,6 +863,27 @@ def main(
             help="Maximum courts to try in direct API mode. Fewer courts = faster per-request response times. 0 = no limit.",
         ),
     ] = 3,
+    direct_offsets: Annotated[
+        str,
+        typer.Option(
+            "--direct-offsets",
+            help="Comma-separated millisecond offsets for direct API mode relative to the booking time. Negative values fire early.",
+        ),
+    ] = "-1000,-750,-500,-250,0",
+    direct_clients: Annotated[
+        int,
+        typer.Option(
+            "--direct-clients",
+            help="HTTP/2 clients per direct offset. Keep at 1 unless testing backend diversity.",
+        ),
+    ] = 1,
+    direct_latency_probes: Annotated[
+        bool,
+        typer.Option(
+            "--direct-latency-probes/--no-direct-latency-probes",
+            help="Measure low-volume CourtReserve GET latency before direct API firing.",
+        ),
+    ] = True,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -863,6 +914,10 @@ def main(
         os.environ["EMAIL"] = email
     if password:
         os.environ["PASSWORD"] = password
+
+    direct_offsets_ms = parse_direct_offsets(direct_offsets)
+    if direct_clients < 1 or direct_clients > 3:
+        raise typer.BadParameter("--direct-clients must be between 1 and 3")
 
     # Parse the booking date and time first (needed for default wait calculation)
     booking_date = parse_booking_date(date)
@@ -1156,8 +1211,8 @@ def main(
         # Format start time as HH:MM:SS
         start_time_str = f"{hour:02d}:{minute:02d}:00"
 
-        # Fire parallel HTTP requests at target time
-        # num_clients=2 for backend diversity with reduced footprint.
+        # Fire direct HTTP requests at the target time using the configured
+        # timing spread. Default is one warmed HTTP/2 client per offset.
         results = fire_parallel_bookings(
             base_tokens=session_tokens,
             cookies=cookies,
@@ -1167,6 +1222,9 @@ def main(
             duration_minutes=duration_minutes,
             target_time=target,
             dry_run=dry_run,
+            num_clients=direct_clients,
+            fire_offsets_ms=direct_offsets_ms,
+            latency_probes=direct_latency_probes,
             user_agent=user_agent,
             captcha_callback=captcha_callback,
         )
@@ -1190,14 +1248,26 @@ def main(
             log.info("  ✓ SUCCESSFUL BOOKINGS:")
             for r in successes:
                 ci = r.get('client_idx', '?')
-                log.info(f"     ✓ {r['court_short']}@c{ci} - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms")
+                offset = r.get("offset_ms", 0)
+                send_offset = r.get("send_offset_ms", 0)
+                log.info(
+                    f"     ✓ {r['court_short']}@{offset:+d}ms/c{ci} - "
+                    f"HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms "
+                    f"(sent {send_offset:+.1f}ms)"
+                )
 
         if failures:
             log.info("")
             log.info("  ✗ FAILED ATTEMPTS:")
             for r in failures:
                 ci = r.get('client_idx', '?')
-                log.info(f"     ✗ {r['court_short']}@c{ci} - HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms: {r['response_text'][:80]}")
+                offset = r.get("offset_ms", 0)
+                send_offset = r.get("send_offset_ms", 0)
+                log.info(
+                    f"     ✗ {r['court_short']}@{offset:+d}ms/c{ci} - "
+                    f"HTTP {r['response_status']} in {r['elapsed_ms']:.0f}ms "
+                    f"(sent {send_offset:+.1f}ms): {r['response_text'][:80]}"
+                )
 
         log.info("")
         log.info(f"  Summary: {len(successes)} succeeded, {len(failures)} failed out of {len(results)} attempts")
@@ -1208,6 +1278,9 @@ def main(
         # Deduplicate while preserving order
         seen = set()
         courts_tried_unique = [c for c in courts_tried if not (c in seen or seen.add(c))]
+        offsets_tried = [r.get("offset_ms", 0) for r in results]
+        seen_offsets = set()
+        offsets_tried_unique = [o for o in offsets_tried if not (o in seen_offsets or seen_offsets.add(o))]
 
         if successes:
             first = successes[0]
@@ -1218,6 +1291,7 @@ def main(
                 "elapsed_ms": first["elapsed_ms"],
                 "offset_ms": first["offset_ms"],
                 "courts_tried": courts_tried_unique,
+                "offsets_tried": offsets_tried_unique,
                 "total_attempts": len(results),
             }
             print(f"===RESULT_JSON==={json.dumps(result_json)}===END_RESULT_JSON===")
@@ -1239,6 +1313,7 @@ def main(
             result_json = {
                 "success": False,
                 "courts_tried": courts_tried_unique,
+                "offsets_tried": offsets_tried_unique,
                 "total_attempts": len(results),
                 "timed_out": len(timed_out),
                 "failure_reasons": failure_reasons[:5],

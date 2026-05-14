@@ -17,6 +17,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Callable
 from urllib.parse import urlencode
 
@@ -45,6 +46,8 @@ COURT_IDS = {
 }
 
 CREATE_RESERVATION_URL = "https://reservations.courtreserve.com/Online/ReservationsApi/CreateReservation/8449"
+BOOKINGS_PAGE_URL = "https://reservations.courtreserve.com/Online/Reservations/Bookings/8449?sId=32125"
+LATENCY_PROBE_OFFSETS_S = [-110, -75, -45, -15]
 
 # Hardcoded placeholder player data (same every booking)
 PLACEHOLDER_PLAYERS = [
@@ -270,20 +273,19 @@ def fire_parallel_bookings(
     duration_minutes: int,
     target_time: datetime,
     dry_run: bool = False,
-    num_clients: int = 2,
+    num_clients: int = 1,
+    fire_offsets_ms: list[int] | None = None,
+    latency_probes: bool = True,
     user_agent: str | None = None,
     captcha_callback: Callable[[], str | None] | None = None,
 ) -> list[dict]:
     """
     Fire parallel booking requests at the target time.
 
-    Creates multiple httpx HTTP/2 clients for backend diversity — each has
-    its own TCP+TLS connection, independently routed by Cloudflare's load
-    balancer across backend servers (__cflb cookie is stripped). Every court
-    is tried on every client for maximum coverage.
-
-    Micro-stagger between clients is randomized each run to avoid a
-    deterministic timing fingerprint.
+    Creates separate httpx HTTP/2 clients for each timing offset. Each client
+    has its own TCP+TLS connection, and every court is tried once per offset.
+    A small optional duplicate count can be used for backend diversity, but the
+    default is one client per offset to keep request volume bounded.
 
     Args:
         base_tokens: Form fields from extract_booking_tokens()
@@ -294,16 +296,21 @@ def fire_parallel_bookings(
         duration_minutes: Duration in minutes
         target_time: When to fire the requests
         dry_run: If True, log what would happen without sending requests
-        num_clients: Number of HTTP/2 clients for backend diversity (default 2)
+        num_clients: Number of HTTP/2 clients per offset (default 1)
+        fire_offsets_ms: Millisecond offsets relative to target_time. Negative
+                         values fire before the booking window target.
+        latency_probes: If True, send a few low-volume GET probes before firing
+                        to log current CourtReserve round-trip latency.
         user_agent: Browser User-Agent string (extracted from Playwright)
         captcha_callback: If provided, called at ~T-90s to solve reCAPTCHA.
                           Returns the token string or None on failure.
 
     Returns list of result dicts.
     """
-    fire_offset_ms = -750
+    if fire_offsets_ms is None:
+        fire_offsets_ms = [-1000, -750, -500, -250, 0]
+    fire_offsets_ms = sorted(fire_offsets_ms)
     micro_stagger_ms = random.randint(5, 20)
-    fire_offset_s = fire_offset_ms / 1000.0
 
     def _build_payloads():
         """Build encoded payloads for all courts from current base_tokens."""
@@ -325,9 +332,14 @@ def fire_parallel_bookings(
     # Pre-build payloads (encode once to bytes, reuse across clients)
     court_payloads = _build_payloads()
 
-    total = len(court_payloads) * num_clients
-    log.info(f"Prepared {total} booking requests ({len(court_payloads)} court(s) x {num_clients} clients)")
-    log.info(f"  Fire offset: {fire_offset_ms:+d}ms, micro-stagger: {micro_stagger_ms}ms between clients")
+    total_clients = len(fire_offsets_ms) * num_clients
+    total = len(court_payloads) * total_clients
+    log.info(
+        f"Prepared {total} booking requests "
+        f"({len(court_payloads)} court(s) x {len(fire_offsets_ms)} offsets x {num_clients} client(s))"
+    )
+    log.info(f"  Fire offsets: {', '.join(f'{o:+d}ms' for o in fire_offsets_ms)}")
+    log.info(f"  Micro-stagger: {micro_stagger_ms}ms between duplicate clients")
 
     if dry_run:
         log.info("")
@@ -337,8 +349,9 @@ def fire_parallel_bookings(
         log.info(f"  Would fire {total} POSTs to: {CREATE_RESERVATION_URL}")
         log.info(f"  Cookies: {len(cookies)} cookies available")
         log.info(f"  Would strip __cflb cookie for backend distribution")
-        log.info(f"  Would create {num_clients} HTTP/2 clients for backend diversity")
-        log.info(f"  Each client fires all {len(court_payloads)} court(s) at {fire_offset_ms:+d}ms (jittered)")
+        log.info(f"  Would create {total_clients} HTTP/2 clients")
+        log.info(f"  Each offset fires all {len(court_payloads)} court(s)")
+        log.info(f"  Latency probes: {'enabled' if latency_probes else 'disabled'}")
         log.info("")
 
         # Log one sample payload in detail
@@ -363,11 +376,24 @@ def fire_parallel_bookings(
         for court_name, court_short, court_id, _ in court_payloads:
             log.info(f"    {court_short} (ID: {court_id})")
 
-        return [{"success": False, "court": cn, "court_short": cs,
-                 "response_status": 0, "response_text": "DRY RUN", "elapsed_ms": 0,
-                 "offset_ms": fire_offset_ms, "client_idx": ci, "cf_ray": ""}
-                for ci in range(num_clients)
-                for cn, cs, _, _ in court_payloads]
+        dry_results = []
+        client_idx = 0
+        for offset_ms in fire_offsets_ms:
+            for _ in range(num_clients):
+                for cn, cs, _, _ in court_payloads:
+                    dry_results.append({
+                        "success": False,
+                        "court": cn,
+                        "court_short": cs,
+                        "response_status": 0,
+                        "response_text": "DRY RUN",
+                        "elapsed_ms": 0,
+                        "offset_ms": offset_ms,
+                        "client_idx": client_idx,
+                        "cf_ray": "",
+                    })
+                client_idx += 1
+        return dry_results
 
     all_results = []
 
@@ -394,51 +420,141 @@ def fire_parallel_bookings(
         "Origin": "https://app.courtreserve.com",
         "Referer": "https://app.courtreserve.com/",
     }
+    warmup_headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://reservations.courtreserve.com/",
+    }
 
-    # N HTTP/2 clients for backend diversity — each gets its own TCP+TLS
-    # connection, independently routed by Cloudflare across backends.
-    # keepalive_expiry=120 ensures warmed connections survive the ~60s
-    # gap between warmup and firing (default 5s was silently killing them).
-    clients: list[httpx.Client] = []
-    for _ in range(num_clients):
-        clients.append(httpx.Client(
+    # One warmed HTTP/2 client per offset/client repeat. keepalive_expiry=120
+    # ensures warmed connections survive the ~60s gap between warmup and firing.
+    client_configs: list[dict] = []
+    for offset_ms in fire_offsets_ms:
+        for repeat_idx in range(num_clients):
+            client_configs.append({
+                "idx": len(client_configs),
+                "offset_ms": offset_ms,
+                "repeat_idx": repeat_idx,
+                "client": httpx.Client(
+                    http2=True,
+                    timeout=60,
+                    headers=client_headers,
+                    cookies=filtered_cookies,
+                    limits=httpx.Limits(keepalive_expiry=120),
+                ),
+            })
+    log.info(f"Created {len(client_configs)} HTTP/2 clients")
+    log.info(f"  User-Agent: {client_headers['User-Agent'][:80]}")
+
+    latency_probe_results: list[dict] = []
+    probe_client = None
+    probe_schedule = []
+    if latency_probes:
+        probe_client = httpx.Client(
             http2=True,
-            timeout=60,
+            timeout=10,
             headers=client_headers,
             cookies=filtered_cookies,
             limits=httpx.Limits(keepalive_expiry=120),
-        ))
-    log.info(f"Created {num_clients} HTTP/2 clients for backend distribution")
-    log.info(f"  User-Agent: {client_headers['User-Agent'][:80]}")
+        )
+        probe_schedule = [
+            {
+                "offset_s": offset_s,
+                "time": target_time + timedelta(seconds=offset_s),
+                "done": False,
+            }
+            for offset_s in LATENCY_PROBE_OFFSETS_S
+        ]
+        log.info(
+            "  Latency probes enabled: "
+            + ", ".join(f"T{offset:+d}s" for offset in LATENCY_PROBE_OFFSETS_S)
+        )
 
     try:
-        # Wait until target time
-        fire_time = target_time + timedelta(seconds=fire_offset_s)
-        delay = (fire_time - datetime.now()).total_seconds()
+        # Wait until the first configured offset.
+        first_fire_time = target_time + timedelta(milliseconds=fire_offsets_ms[0])
+        delay = (first_fire_time - datetime.now()).total_seconds()
         if delay > 0:
             hours = int(delay // 3600)
             minutes = int((delay % 3600) // 60)
             seconds = int(delay % 60)
-            log.info(f"Waiting {hours}h {minutes}m {seconds}s until fire time ({fire_time.strftime('%H:%M:%S.%f')[:-3]})")
+            log.info(
+                f"Waiting {hours}h {minutes}m {seconds}s until first fire time "
+                f"({first_fire_time.strftime('%H:%M:%S.%f')[:-3]})"
+            )
 
             # CAPTCHA solve at ~T-90s (before TLS warmup) so the token
             # is fresh (~30s old) at fire time, well within reCAPTCHA's ~2 min TTL.
-            captcha_time = fire_time - timedelta(seconds=90)
+            captcha_time = first_fire_time - timedelta(seconds=90)
             captcha_solved = captcha_callback is None  # True if no CAPTCHA needed
 
             # TLS warmup at ~T-60s: GET to the reservation page (not HEAD
             # to the API) to establish connections without looking anomalous.
-            warmup_time = fire_time - timedelta(seconds=60)
+            warmup_time = first_fire_time - timedelta(seconds=60)
             tls_warmed = False
+
+            def _run_latency_probe(planned_offset_s: int):
+                """Measure one low-volume GET round trip to the reservation page."""
+                if probe_client is None:
+                    return
+
+                remaining_to_fire = (first_fire_time - datetime.now()).total_seconds()
+                timeout_s = min(10, max(1, remaining_to_fire - 5))
+                started_dt = datetime.now()
+                send_offset_s = (started_dt - target_time).total_seconds()
+                try:
+                    ps = time.time()
+                    pr = probe_client.get(BOOKINGS_PAGE_URL, timeout=timeout_s, headers=warmup_headers)
+                    elapsed_ms = (time.time() - ps) * 1000
+                    cf_ray = pr.headers.get("cf-ray", "")
+                    server_date = pr.headers.get("date", "")
+                    latency_probe_results.append({
+                        "planned_offset_s": planned_offset_s,
+                        "send_offset_s": send_offset_s,
+                        "elapsed_ms": elapsed_ms,
+                        "status_code": pr.status_code,
+                        "http_version": pr.http_version,
+                        "cf_ray": cf_ray,
+                        "server_date": server_date,
+                    })
+                    status_tag = f" HTTP {pr.status_code}" if pr.status_code != 200 else ""
+                    cf_ray_tag = f" cf-ray={cf_ray}" if cf_ray else ""
+                    server_date_tag = f" server-date={server_date}" if server_date else ""
+                    log.info(
+                        f"  Latency probe planned T{planned_offset_s:+d}s, "
+                        f"sent T{send_offset_s:+.1f}s: {elapsed_ms:.0f}ms "
+                        f"{pr.http_version}{status_tag}{cf_ray_tag}{server_date_tag}"
+                    )
+                except Exception as e:
+                    latency_probe_results.append({
+                        "planned_offset_s": planned_offset_s,
+                        "send_offset_s": send_offset_s,
+                        "elapsed_ms": None,
+                        "error": str(e),
+                    })
+                    log.warning(
+                        f"  Latency probe planned T{planned_offset_s:+d}s, "
+                        f"sent T{send_offset_s:+.1f}s failed: {e}"
+                    )
 
             last_log = None
             while True:
-                remaining = (fire_time - datetime.now()).total_seconds()
+                now = datetime.now()
+                remaining = (first_fire_time - now).total_seconds()
                 if remaining <= 0.05:
                     break
 
+                for probe in probe_schedule:
+                    if probe["done"] or now < probe["time"]:
+                        continue
+                    probe["done"] = True
+                    if (now - probe["time"]).total_seconds() > 5:
+                        continue
+                    _run_latency_probe(probe["offset_s"])
+                    now = datetime.now()
+                    remaining = (first_fire_time - now).total_seconds()
+
                 # Solve CAPTCHA at ~T-90s
-                if not captcha_solved and datetime.now() >= captcha_time:
+                if not captcha_solved and now >= captcha_time:
                     captcha_solved = True
                     token = captcha_callback()
                     if token:
@@ -449,27 +565,28 @@ def fire_parallel_bookings(
                         log.warning("  CAPTCHA callback returned no token — requests may fail")
 
                 # TLS warmup at ~60s before fire time
-                if not tls_warmed and datetime.now() >= warmup_time:
+                if not tls_warmed and now >= warmup_time:
                     tls_warmed = True
                     # Hard timeout: at most 50s, but also leave 5s buffer before fire time
                     max_timeout = min(50, max(1, remaining - 5))
-                    log.info(f"Pre-warming {num_clients} HTTP/2 connections (timeout={max_timeout:.0f}s)...")
+                    log.info(f"Pre-warming {len(client_configs)} HTTP/2 connections (timeout={max_timeout:.0f}s)...")
 
-                    warmup_url = "https://reservations.courtreserve.com/Online/Reservations/Bookings/8449?sId=32125"
-                    warmup_headers = {
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Referer": "https://reservations.courtreserve.com/",
-                    }
-
-                    def _warmup_one(idx, c):
+                    def _warmup_one(cfg):
+                        idx = cfg["idx"]
+                        offset_ms = cfg["offset_ms"]
+                        c = cfg["client"]
                         try:
                             ws = time.time()
-                            wr = c.get(warmup_url, timeout=max_timeout, headers=warmup_headers)
+                            wr = c.get(BOOKINGS_PAGE_URL, timeout=max_timeout, headers=warmup_headers)
                             wms = (time.time() - ws) * 1000
                             cflb_val = c.cookies.get("__cflb", "none")
                             cf_ray = wr.headers.get("cf-ray", "N/A")
+                            server_date = wr.headers.get("date", "")
                             status_tag = f" HTTP {wr.status_code}" if wr.status_code != 200 else ""
-                            log.info(f"  [client {idx}] {wms:.0f}ms {wr.http_version}{status_tag} __cflb={cflb_val[:20]} cf-ray={cf_ray}")
+                            log.info(
+                                f"  [client {idx}@{offset_ms:+d}ms] {wms:.0f}ms {wr.http_version}{status_tag} "
+                                f"__cflb={cflb_val[:20]} cf-ray={cf_ray} server-date={server_date}"
+                            )
                             if wr.status_code != 200:
                                 log.warning(f"  [client {idx}] warmup got HTTP {wr.status_code} — possible Cloudflare challenge")
                             return idx, True
@@ -477,17 +594,18 @@ def fire_parallel_bookings(
                             log.warning(f"  [client {idx}] warmup failed (non-fatal): {e}")
                             return idx, False
 
-                    with ThreadPoolExecutor(max_workers=num_clients) as warmup_exec:
+                    with ThreadPoolExecutor(max_workers=len(client_configs)) as warmup_exec:
                         warmup_futures = [
-                            warmup_exec.submit(_warmup_one, i, c)
-                            for i, c in enumerate(clients)
+                            warmup_exec.submit(_warmup_one, cfg)
+                            for cfg in client_configs
                         ]
                         for f in as_completed(warmup_futures):
                             f.result()
 
                     # Re-apply Playwright cookies (sans __cflb) to avoid
                     # contamination from Cloudflare cookies set during warmup
-                    for c in clients:
+                    for cfg in client_configs:
+                        c = cfg["client"]
                         c.cookies.clear()
                         c.cookies.update(filtered_cookies)
 
@@ -500,15 +618,7 @@ def fire_parallel_bookings(
                     last_log = remaining_int
                 time.sleep(max(0, min(1.0, remaining - 0.05)))
 
-            # Busy-wait for precise timing using perf_counter (monotonic,
-            # no heap allocations per iteration unlike datetime.now())
-            anchor_wall = datetime.now()
-            anchor_pc = time.perf_counter()
-            fire_pc = anchor_pc + (fire_time - anchor_wall).total_seconds()
-            while time.perf_counter() < fire_pc:
-                pass
-
-        # If we skipped the wait loop (delay <= 0), solve CAPTCHA now
+        # If we skipped the wait loop (delay <= 0), solve CAPTCHA now.
         if captcha_callback is not None and not base_tokens.get("Token"):
             token = captcha_callback()
             if token:
@@ -523,16 +633,21 @@ def fire_parallel_bookings(
         # Event to signal early cancellation once a booking succeeds
         success_event = threading.Event()
 
-        def _submit(client_idx, client, court_name, court_short, encoded_payload):
+        def _submit(cfg, court_name, court_short, encoded_payload):
             """Submit via the given HTTP/2 client. Skips if another thread already succeeded."""
+            client_idx = cfg["idx"]
+            offset_ms = cfg["offset_ms"]
+            client = cfg["client"]
             if success_event.is_set():
                 return {
                     "success": False, "court": court_name, "court_short": court_short,
                     "response_status": 0, "response_text": "CANCELLED (another request succeeded)",
-                    "elapsed_ms": 0, "offset_ms": fire_offset_ms,
+                    "elapsed_ms": 0, "offset_ms": offset_ms,
                     "client_idx": client_idx, "cf_ray": "", "cancelled": True,
                 }
 
+            send_dt = datetime.now()
+            send_offset_ms = (send_dt - target_time).total_seconds() * 1000
             start = time.time()
             try:
                 resp = client.post(
@@ -540,7 +655,9 @@ def fire_parallel_bookings(
                     content=encoded_payload,
                     headers=post_headers,
                 )
+                response_dt = datetime.now()
                 elapsed_ms = (time.time() - start) * 1000
+                response_offset_ms = (response_dt - target_time).total_seconds() * 1000
 
                 cf_ray = resp.headers.get("cf-ray", "")
                 server_date = resp.headers.get("date", "")
@@ -549,7 +666,7 @@ def fire_parallel_bookings(
                 # Capture bot-detection-relevant headers for diagnostics
                 detection_headers = {}
                 for hdr in ("cf-mitigated", "cf-chl-out-s", "x-ratelimit-remaining",
-                            "x-ratelimit-limit", "retry-after", "server"):
+                            "x-ratelimit-limit", "retry-after"):
                     val = resp.headers.get(hdr)
                     if val:
                         detection_headers[hdr] = val
@@ -576,21 +693,39 @@ def fire_parallel_bookings(
                     "success": is_success, "court": court_name, "court_short": court_short,
                     "response_status": resp.status_code,
                     "response_text": message or resp.text[:500],
-                    "elapsed_ms": elapsed_ms, "offset_ms": fire_offset_ms,
+                    "elapsed_ms": elapsed_ms, "offset_ms": offset_ms,
                     "client_idx": client_idx, "cf_ray": cf_ray,
                     "http_version": http_ver, "server_date": server_date,
+                    "send_local": send_dt.strftime("%H:%M:%S.%f")[:-3],
+                    "response_local": response_dt.strftime("%H:%M:%S.%f")[:-3],
+                    "send_offset_ms": send_offset_ms,
+                    "response_offset_ms": response_offset_ms,
                     "detection_headers": detection_headers,
                 }
             except Exception as e:
+                response_dt = datetime.now()
                 return {
                     "success": False, "court": court_name, "court_short": court_short,
                     "response_status": 0, "response_text": str(e),
-                    "elapsed_ms": (time.time() - start) * 1000, "offset_ms": fire_offset_ms,
+                    "elapsed_ms": (time.time() - start) * 1000, "offset_ms": offset_ms,
                     "client_idx": client_idx, "cf_ray": "",
+                    "send_local": send_dt.strftime("%H:%M:%S.%f")[:-3],
+                    "response_local": response_dt.strftime("%H:%M:%S.%f")[:-3],
+                    "send_offset_ms": send_offset_ms,
+                    "response_offset_ms": (response_dt - target_time).total_seconds() * 1000,
                 }
 
-        # Fire all requests: each client sends all courts, with randomized
-        # micro-stagger between clients to avoid local socket contention
+        def _wait_until(planned_time: datetime):
+            """Busy-wait to a precise wall-clock time using perf_counter."""
+            anchor_wall = datetime.now()
+            anchor_pc = time.perf_counter()
+            fire_pc = anchor_pc + (planned_time - anchor_wall).total_seconds()
+            while time.perf_counter() < fire_pc:
+                pass
+
+        # Fire all requests: each offset client sends all courts. Duplicate
+        # clients for the same offset get a tiny stagger to reduce local socket
+        # contention while still landing inside the same timing bucket.
         with ThreadPoolExecutor(max_workers=total) as executor:
             # Pre-warm worker threads so creation overhead doesn't affect firing
             warmup_futs = [executor.submit(lambda: None) for _ in range(total)]
@@ -598,15 +733,32 @@ def fire_parallel_bookings(
                 f.result()
 
             futures = []
-            for i, c in enumerate(clients):
-                if i > 0:
+            for cfg in client_configs:
+                if success_event.is_set():
+                    log.info("  Success already observed; skipping remaining scheduled offsets")
+                    break
+
+                planned_fire = target_time + timedelta(milliseconds=cfg["offset_ms"])
+                if cfg["repeat_idx"] > 0:
                     time.sleep(micro_stagger_ms / 1000.0)
+                elif planned_fire > datetime.now():
+                    _wait_until(planned_fire)
+
+                if success_event.is_set():
+                    log.info("  Success observed while waiting; skipping remaining scheduled offsets")
+                    break
 
                 fire_actual = datetime.now()
-                log.info(f"  Firing client {i} at {fire_actual.strftime('%H:%M:%S.%f')[:-3]}")
+                actual_offset = (fire_actual - target_time).total_seconds() * 1000
+                diff_from_plan = actual_offset - cfg["offset_ms"]
+                log.info(
+                    f"  Firing client {cfg['idx']} offset {cfg['offset_ms']:+d}ms "
+                    f"at {fire_actual.strftime('%H:%M:%S.%f')[:-3]} "
+                    f"(actual {actual_offset:+.1f}ms, diff {diff_from_plan:+.1f}ms)"
+                )
 
                 for court_name, court_short, court_id, encoded in court_payloads:
-                    futures.append(executor.submit(_submit, i, c, court_name, court_short, encoded))
+                    futures.append(executor.submit(_submit, cfg, court_name, court_short, encoded))
 
             # Collect results as they complete
             for future in as_completed(futures):
@@ -615,7 +767,14 @@ def fire_parallel_bookings(
                     continue
                 status = "SUCCESS" if result["success"] else "FAILED"
                 cf_ray_tag = f" cf-ray={result['cf_ray']}" if result.get("cf_ray") else ""
-                log.info(f"  [{result['court_short']}@c{result['client_idx']}] {status} - HTTP {result['response_status']} in {result['elapsed_ms']:.0f}ms{cf_ray_tag}")
+                server_date_tag = f" server-date={result['server_date']}" if result.get("server_date") else ""
+                log.info(
+                    f"  [{result['court_short']}@{result['offset_ms']:+d}ms/c{result['client_idx']}] "
+                    f"{status} - HTTP {result['response_status']} in {result['elapsed_ms']:.0f}ms "
+                    f"send={result.get('send_offset_ms', 0):+.1f}ms "
+                    f"recv={result.get('response_offset_ms', 0):+.1f}ms"
+                    f"{cf_ray_tag}{server_date_tag}"
+                )
                 all_results.append(result)
 
         # Log diagnostic summary
@@ -636,6 +795,17 @@ def fire_parallel_bookings(
                      f"elapsed={min(elapsed_all):.0f}-{max(elapsed_all):.0f}ms")
             if server_dates:
                 log.info(f"  Server date (first response): {server_dates[0]}")
+                parsed_dates = []
+                for d in server_dates:
+                    try:
+                        parsed_dates.append(parsedate_to_datetime(d))
+                    except Exception:
+                        pass
+                if parsed_dates:
+                    log.info(
+                        "  Server date range: "
+                        f"{min(parsed_dates).isoformat()} to {max(parsed_dates).isoformat()}"
+                    )
 
             # Log any bot-detection-relevant headers (only if present)
             detection_found = {}
@@ -645,8 +815,26 @@ def fire_parallel_bookings(
             if detection_found:
                 log.warning(f"  ⚠ Detection headers found: {dict((k, list(v)) for k, v in detection_found.items())}")
 
+        completed_probe_ms = [
+            p["elapsed_ms"]
+            for p in latency_probe_results
+            if isinstance(p.get("elapsed_ms"), (int, float))
+        ]
+        if completed_probe_ms:
+            avg_probe_ms = sum(completed_probe_ms) / len(completed_probe_ms)
+            log.info(
+                f"  Latency probe summary: {len(completed_probe_ms)} completed, "
+                f"RTT={min(completed_probe_ms):.0f}-{max(completed_probe_ms):.0f}ms, "
+                f"avg={avg_probe_ms:.0f}ms"
+            )
+        failed_probe_count = len(latency_probe_results) - len(completed_probe_ms)
+        if failed_probe_count:
+            log.warning(f"  Latency probe failures: {failed_probe_count}")
+
     finally:
-        for c in clients:
-            c.close()
+        if probe_client is not None:
+            probe_client.close()
+        for cfg in client_configs:
+            cfg["client"].close()
 
     return all_results

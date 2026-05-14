@@ -97,6 +97,12 @@ python court_booking.py --time 21:00 --duration 2 --direct --wait-until 07:00
 # Try more courts (default: top 3 available, 0 = no limit)
 python court_booking.py --time 21:00 --duration 2 --direct --max-courts 5
 
+# Tune direct API timing offsets in milliseconds (default shown)
+python court_booking.py --time 21:00 --duration 2 --direct --direct-offsets="-1000,-750,-500,-250,0"
+
+# Disable pre-fire latency probes if you want the smallest possible request footprint
+python court_booking.py --time 21:00 --duration 2 --direct --no-direct-latency-probes
+
 # Specify preferred courts in priority order
 python court_booking.py --time 21:00 --duration 2 --direct --courts 5C,5D,6D
 
@@ -105,7 +111,7 @@ python court_booking.py --time 21:00 --duration 2 --parallel --attempts 5
 ```
 
 > **Booking Modes:**
-> - `--direct` (recommended): Uses one browser for setup, then fires lightweight HTTP POST requests at the target time. Fastest and lowest resource usage.
+> - `--direct` (recommended): Uses one browser for setup, logs a few low-volume latency probes, then fires lightweight HTTP POST requests at configured timing offsets around the target time. Fastest and lowest resource usage.
 > - `--parallel`: Spawns multiple Chrome instances that each fill out and submit the form. Uses more resources but doesn't rely on hardcoded form data.
 > - Neither flag: Sequential mode — tries courts one at a time in a single browser.
 >
