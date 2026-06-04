@@ -146,7 +146,23 @@ def select_booking_date(date: str | datetime | None = None):
     try:
         date_element = page.locator(f'a[data-value="{formatted_date}"]')
         date_element.wait_for(timeout=10000)
-        date_element.click()
+        try:
+            # Short timeout so we fail fast instead of burning the default 30s
+            # retrying against an overlay (e.g. the mmenu slideout header logo,
+            # class "mm-slideout", which has been observed intercepting pointer
+            # events on the calendar date cell).
+            date_element.click(timeout=5000)
+        except Exception as click_err:
+            # Fall back to dispatching the DOM click event directly. This skips
+            # Playwright's actionability/hit-test checks, so an overlapping
+            # element or a cell that briefly goes not-visible can't block it.
+            # Kendo's calendar binds its handler to the cell's click event, so
+            # this still triggers date selection.
+            log.warning(
+                f"Normal click on date cell failed ({click_err.__class__.__name__}); "
+                f"falling back to dispatch_event('click')"
+            )
+            date_element.dispatch_event("click")
     except Exception as e:
         if days_ahead == MAX_DAYS_AHEAD:
             hint = "Bookings typically open 5 days in advance at a specific time."
