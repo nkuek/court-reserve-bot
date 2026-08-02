@@ -204,6 +204,101 @@ fly deploy
 fly logs
 ```
 
+## Remote control over SSH
+
+The bot runs on a separate Mac on the LAN, started by hand in a tmux session.
+`scripts/remote.sh` wraps the common operations so they can be driven from this
+machine (or by an agent) without an interactive shell.
+
+### One-time bootstrap
+
+These steps need a human — they authorize a key on the remote machine.
+
+**1. Enable Remote Login on the bot Mac.** System Settings → General → Sharing →
+Remote Login. Or, in a terminal on that machine:
+
+```bash
+sudo systemsetup -setremotelogin on
+```
+
+**2. Note its address and username.** On the bot Mac:
+
+```bash
+scutil --get LocalHostName   # e.g. mac-mini -> reachable as mac-mini.local
+whoami
+ipconfig getifaddr en0       # fallback if mDNS is flaky
+```
+
+Give it a static DHCP reservation in your router if you use the IP — a lease
+change otherwise breaks the alias silently.
+
+**3. Authorize your key.** From this machine, substituting the values above:
+
+```bash
+ssh-copy-id -i ~/.ssh/id_ed25519.pub USER@HOST
+ssh USER@HOST 'echo ok'     # must succeed without a password prompt
+```
+
+**4. Add the `courtbot` alias** to `~/.ssh/config`:
+
+```sshconfig
+Host courtbot
+  HostName mac-mini.local
+  User USER
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+  ServerAliveInterval 30
+```
+
+The scripts and the agent permission rules both key off the alias `courtbot`,
+so the address can change later without touching anything else.
+
+**5. Verify the remote side:**
+
+```bash
+./scripts/remote.sh doctor
+```
+
+This checks ssh, `tmux`, `git`, the venv interpreter and `.env`. Install
+anything it reports as MISSING (`brew install tmux`).
+
+### Daily use
+
+```bash
+./scripts/remote.sh status          # tmux session, bot process, git revision
+./scripts/remote.sh pull            # git pull --ff-only on the remote
+./scripts/remote.sh restart         # restart the bot's tmux session
+./scripts/remote.sh logs 100        # last 100 log lines
+./scripts/remote.sh follow          # stream the log
+./scripts/remote.sh book --time 21:00 --duration 2   # one-off booking run
+```
+
+`bot.py` only logs to stdout, so `start` pipes it through `tee` into
+`logs/bot.out`. That file is what `logs`/`follow` read — a bot started by hand
+outside this script leaves nothing durable to tail.
+
+If the remote paths differ from the defaults, drop a `scripts/remote.env`
+(gitignored) next to the script:
+
+```bash
+COURTBOT_REPO=~/code/court-reserve-bot
+COURTBOT_TMUX=bot
+```
+
+### Letting the agent drive it
+
+Add these to the `permissions.allow` list in `.claude/settings.local.json` so
+routine remote commands don't prompt each time:
+
+```json
+"Bash(./scripts/remote.sh:*)",
+"Bash(scripts/remote.sh:*)",
+"Bash(ssh courtbot:*)"
+```
+
+Scoping to the `courtbot` alias rather than `ssh:*` keeps the grant to this one
+host.
+
 ## Project Structure
 
 ```
@@ -216,6 +311,8 @@ fly logs
 ├── requirements.txt          # Python dependencies
 ├── Dockerfile                # Container definition
 ├── fly.toml                  # Fly.io configuration
+├── scripts/
+│   └── remote.sh             # Drive the remote Mac deployment over SSH
 └── utils/
     ├── booking_date.py       # Date selection
     ├── direct_api.py         # Direct HTTP API booking (no browser UI)

@@ -49,6 +49,9 @@ logs/
 # User data (encrypted credentials)
 data/
 
+# Local remote-host config for scripts/remote.sh
+scripts/remote.env
+
 # Debug screenshots
 debug_*.png
 
