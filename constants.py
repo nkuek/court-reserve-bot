@@ -22,7 +22,7 @@ FACILITY_CLOSING_HOUR = 23
 FACILITY_CLOSING_MINUTE = 0
 
 # Maximum days in advance for booking
-MAX_DAYS_AHEAD = 5
+MAX_DAYS_AHEAD = 6
 
 # Global state for browser management
 _stealth_ctx_mgr = None

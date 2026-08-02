@@ -8,7 +8,7 @@ Automated booking scripts for CourtReserve using Playwright. Book courts and reg
 - **Direct API Mode**: Fires HTTP POST requests directly at click time — no browser UI interaction needed during the booking race
 - **Open Play Registration**: Register for open play events
 - **Check Availability**: View available time slots for any date
-- **Date Selection**: Book for today, tomorrow, or up to 5 days in advance
+- **Date Selection**: Book for today, tomorrow, or up to 6 days in advance
 - **Wait Until**: Schedule scripts to run at a specific time (e.g., when booking windows open)
 - **Closing Time Handling**: Automatically adjusts duration if it would exceed facility closing time (23:00)
 - **Discord Bot**: Control everything via Discord slash commands
@@ -252,7 +252,7 @@ Only the last 20 snapshots are kept to save disk space.
 
 ### Date not available
 
-- Bookings open 5 days in advance at a specific time (usually 7 AM)
+- Bookings open 6 days in advance at a specific time (usually 7 AM)
 - Use `--wait-until` to wait for the booking window to open
 
 ### Court unavailable

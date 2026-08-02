@@ -31,7 +31,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 from discord.ext import tasks
-from constants import VALID_DURATIONS
+from constants import VALID_DURATIONS, MAX_DAYS_AHEAD
 from utils.user_store import (
     save_user_credentials,
     get_user_credentials,
@@ -364,31 +364,31 @@ COMMON_TIMES = [
 ]
 
 def get_date_options() -> list[tuple[str, str]]:
-    """Generate date options with actual run dates and implied booking dates (+5d)."""
+    """Generate date options with actual run dates and implied booking dates (+MAX_DAYS_AHEAD)."""
     today = datetime.now()
 
     options = []
 
     # Today
     today_str = today.strftime("%a %m/%d")
-    options.append(("today", f"Today ({today_str}) → books { (today + timedelta(days=5)).strftime('%a %m/%d') }"))
+    options.append(("today", f"Today ({today_str}) → books { (today + timedelta(days=MAX_DAYS_AHEAD)).strftime('%a %m/%d') }"))
 
     # Tomorrow
     tomorrow = today + timedelta(days=1)
     tomorrow_str = tomorrow.strftime("%a %m/%d")
-    options.append(("tomorrow", f"Tomorrow ({tomorrow_str}) → books { (tomorrow + timedelta(days=5)).strftime('%a %m/%d') }"))
+    options.append(("tomorrow", f"Tomorrow ({tomorrow_str}) → books { (tomorrow + timedelta(days=MAX_DAYS_AHEAD)).strftime('%a %m/%d') }"))
 
     # +2d through +6d (full week)
     for days in range(2, 7):
         future = today + timedelta(days=days)
         future_str = future.strftime("%a %m/%d")
-        book_str = (future + timedelta(days=5)).strftime("%a %m/%d")
+        book_str = (future + timedelta(days=MAX_DAYS_AHEAD)).strftime("%a %m/%d")
         options.append((f"+{days}d", f"{future_str} → books {book_str}"))
 
     # Latest (7 days ahead)
     latest = today + timedelta(days=7)
     latest_str = latest.strftime("%a %m/%d")
-    options.append(("latest", f"{latest_str} → books {(latest + timedelta(days=5)).strftime('%a %m/%d')} (earliest booking)"))
+    options.append(("latest", f"{latest_str} → books {(latest + timedelta(days=MAX_DAYS_AHEAD)).strftime('%a %m/%d')} (earliest booking)"))
 
     return options
 
@@ -698,7 +698,7 @@ async def help_command(interaction: discord.Interaction):
         name="📅 Date Options",
         value=(
             "Autocomplete shows actual dates!\n"
-            "`latest` — 5 days ahead\n"
+            f"`latest` — {MAX_DAYS_AHEAD} days ahead\n"
             "`today` / `tomorrow`\n"
             "`+3d` — 3 days from now"
         ),
@@ -1983,7 +1983,7 @@ def _compute_next_run_datetime(target_day: int, hour: int, minute: int) -> datet
 
 
 def _booking_target_date(sched: dict) -> str | None:
-    """Return booking date (run date + 5 days) as string for booking tasks."""
+    """Return booking date (run date + MAX_DAYS_AHEAD days) as string for booking tasks."""
     if sched.get("task_type") != "book":
         return None
     try:
@@ -1991,17 +1991,17 @@ def _booking_target_date(sched: dict) -> str | None:
             run_dt = datetime.fromisoformat(sched["run_at"])
         else:
             run_dt = _compute_next_run_datetime(sched["day_of_week"], sched["hour"], sched["minute"])
-        return (run_dt.date() + timedelta(days=5)).strftime("%a %m/%d")
+        return (run_dt.date() + timedelta(days=MAX_DAYS_AHEAD)).strftime("%a %m/%d")
     except Exception:
         return None
 
 
 def _booking_day_choices() -> list[app_commands.Choice]:
-    """Day choices with helper text indicating booking date (run day + 5)."""
+    """Day choices with helper text indicating booking date (run day + MAX_DAYS_AHEAD)."""
     choices = []
     for num in range(7):
         run_name = DAY_NAMES.get(num, "?")
-        book_name = DAY_NAMES.get((num + 5) % 7, "?")
+        book_name = DAY_NAMES.get((num + MAX_DAYS_AHEAD) % 7, "?")
         choices.append(app_commands.Choice(name=f"{run_name} (books {book_name})", value=num))
     return choices
 
@@ -2179,7 +2179,7 @@ async def schedule_book(
     )
     embed.add_field(name="Runs At", value=f"{day_name} @ {run_time_12h}", inline=True)
     next_run_dt = _compute_next_run_datetime(day, hour, minute)
-    books_date = (next_run_dt.date() + timedelta(days=5)).strftime("%a %m/%d")
+    books_date = (next_run_dt.date() + timedelta(days=MAX_DAYS_AHEAD)).strftime("%a %m/%d")
     embed.add_field(name="Books For", value=f"{books_date} @ {booking_time_12h}", inline=True)
     embed.add_field(name="Duration", value=f"{duration}h", inline=True)
     embed.add_field(name="Court", value=court_display, inline=True)
@@ -2277,7 +2277,7 @@ async def schedule_once(
         except Exception:
             target_date = None
     elif date.lower() == "latest":
-        target_date = today + timedelta(days=5)
+        target_date = today + timedelta(days=MAX_DAYS_AHEAD)
 
     if not target_date:
         await interaction.response.send_message(
@@ -2327,7 +2327,7 @@ async def schedule_once(
         color=discord.Color.green(),
     )
     embed.add_field(name="Run At", value=when_display, inline=True)
-    books_date = (run_dt.date() + timedelta(days=5)).strftime("%a %m/%d")
+    books_date = (run_dt.date() + timedelta(days=MAX_DAYS_AHEAD)).strftime("%a %m/%d")
     embed.add_field(name="Books For", value=f"{books_date} @ {_format_12h(booking_time)}", inline=True)
     embed.add_field(name="Duration", value=f"{duration}h", inline=True)
     court_display = "Any" if court.lower() == "any" else court.replace("Pickleball Court ", "").replace(" (Bubble B)", "")

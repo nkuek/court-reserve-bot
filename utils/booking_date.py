@@ -15,7 +15,7 @@ def parse_booking_date(value: str | None) -> datetime:
     Parse a date string for booking.
 
     Supports formats:
-        - None or "latest" - 5 days from now (max advance booking)
+        - None or "latest" - MAX_DAYS_AHEAD days from now (max advance booking)
         - "today" - today's date
         - "tomorrow" - tomorrow's date
         - "+Nd" (e.g., "+3d") - N days from now
@@ -25,7 +25,7 @@ def parse_booking_date(value: str | None) -> datetime:
         datetime: The target booking date.
 
     Raises:
-        DateSelectionError: If date is invalid or more than 5 days ahead.
+        DateSelectionError: If date is invalid or more than MAX_DAYS_AHEAD days ahead.
     """
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     max_date = today + timedelta(days=MAX_DAYS_AHEAD)
@@ -91,7 +91,7 @@ def select_booking_date(date: str | datetime | None = None):
 
     Args:
         date: The date to book. Can be:
-              - None or "latest" for 5 days ahead (default)
+              - None or "latest" for MAX_DAYS_AHEAD days ahead (default)
               - "today", "tomorrow"
               - "+Nd" (e.g., "+3d") for N days from now
               - "MM/DD" (e.g., "12/15") for a specific date
@@ -165,7 +165,7 @@ def select_booking_date(date: str | datetime | None = None):
             date_element.dispatch_event("click")
     except Exception as e:
         if days_ahead == MAX_DAYS_AHEAD:
-            hint = "Bookings typically open 5 days in advance at a specific time."
+            hint = f"Bookings typically open {MAX_DAYS_AHEAD} days in advance at a specific time."
         else:
             hint = "The date may not be available in the calendar."
         raise DateSelectionError(
