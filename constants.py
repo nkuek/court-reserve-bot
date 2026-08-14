@@ -189,6 +189,9 @@ def browser_session():
 
 # Court priority list
 COURTS = [
+    "Pickleball Court #7A (Bubble B)",
+    "Pickleball Court #8A (Bubble B)",
+    "Pickleball Court #8B (Bubble B)",
     "Pickleball Court 5C (Bubble B)",
     "Pickleball Court 5D (Bubble B)",
     "Pickleball Court 5B (Bubble B)",
@@ -197,8 +200,5 @@ COURTS = [
     "Pickleball Court 6B (Bubble B)",
     "Pickleball Court 6C (Bubble B)",
     "Pickleball Court 6D (Bubble B)",
-    "Pickleball Court #7A (Bubble B)",
     "Pickleball Court #7B (Bubble B)",
-    "Pickleball Court #8A (Bubble B)",
-    "Pickleball Court #8B (Bubble B)",
 ]
