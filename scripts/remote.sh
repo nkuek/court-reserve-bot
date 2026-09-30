@@ -129,7 +129,9 @@ case "$cmd" in
     ;;
 
   stop)
-    if rsh "tmux kill-session -t $SESSION 2>/dev/null"; then
+    # The = forces an exact session name. A bare target prefix-matches and
+    # would take the sidecar session down with the bot.
+    if rsh "tmux kill-session -t '=$SESSION' 2>/dev/null"; then
       echo "stopped tmux session '$SESSION'"
     else
       echo "no tmux session '$SESSION'"
@@ -171,7 +173,7 @@ case "$cmd" in
     ;;
 
   wa-start)
-    if rsh "tmux has-session -t $WA_SESSION 2>/dev/null"; then
+    if rsh "tmux has-session -t '=$WA_SESSION' 2>/dev/null"; then
       echo "session '$WA_SESSION' is already running" >&2
       exit 1
     fi
@@ -181,7 +183,7 @@ case "$cmd" in
     ;;
 
   wa-stop)
-    if rsh "tmux kill-session -t $WA_SESSION 2>/dev/null"; then
+    if rsh "tmux kill-session -t '=$WA_SESSION' 2>/dev/null"; then
       echo "stopped tmux session '$WA_SESSION'"
     else
       echo "no tmux session '$WA_SESSION'"
