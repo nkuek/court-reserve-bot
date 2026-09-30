@@ -23,9 +23,14 @@ def _connect() -> sqlite3.Connection:
             failed_at TEXT,
             attempts INTEGER NOT NULL DEFAULT 0,
             last_error TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            target TEXT
         )
     """)
+    try:
+        conn.execute("ALTER TABLE polls ADD COLUMN target TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     conn.commit()
     return conn
 
@@ -39,13 +44,16 @@ def _from_utc_iso(value: str) -> datetime:
     return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
 
 
-def enqueue_poll(question: str, send_at: datetime) -> bool:
-    """Queue a poll. Returns False when the same question is already queued or sent."""
+def enqueue_poll(question: str, send_at: datetime, target: str | None = None) -> bool:
+    """Queue a poll. Returns False when the same question is already queued or sent.
+
+    target is a WhatsApp JID. None means the configured group.
+    """
     conn = _connect()
     try:
         cursor = conn.execute(
-            "INSERT OR IGNORE INTO polls (question, send_at, created_at) VALUES (?, ?, ?)",
-            (question, _utc_iso(send_at), _utc_iso(datetime.now(timezone.utc))),
+            "INSERT OR IGNORE INTO polls (question, send_at, created_at, target) VALUES (?, ?, ?, ?)",
+            (question, _utc_iso(send_at), _utc_iso(datetime.now(timezone.utc)), target),
         )
         conn.commit()
         return cursor.rowcount > 0
@@ -58,7 +66,7 @@ def due_polls(now: datetime) -> list[dict]:
     try:
         rows = conn.execute(
             """
-            SELECT id, question, send_at, attempts
+            SELECT id, question, send_at, attempts, target
             FROM polls
             WHERE sent_at IS NULL AND failed_at IS NULL AND send_at <= ?
             ORDER BY send_at
@@ -71,6 +79,7 @@ def due_polls(now: datetime) -> list[dict]:
                 "question": r["question"],
                 "send_at": _from_utc_iso(r["send_at"]),
                 "attempts": r["attempts"],
+                "target": r["target"],
             }
             for r in rows
         ]

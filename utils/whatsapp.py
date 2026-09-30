@@ -72,9 +72,12 @@ def queue_booking_poll(booking_date: datetime, hour: int, minute: int, duration_
         log.warning(f"Failed to queue WhatsApp poll: {e}")
 
 
-def send_poll(question: str, options: list[str] = POLL_OPTIONS) -> str | None:
+def send_poll(question: str, options: list[str] = POLL_OPTIONS, to: str | None = None) -> str | None:
     """Post a poll through the sidecar. Raises on any transport or sidecar error."""
-    payload = json.dumps({"question": question, "options": options, "selectableCount": 1}).encode()
+    body = {"question": question, "options": options, "selectableCount": 1}
+    if to:
+        body["to"] = to
+    payload = json.dumps(body).encode()
     req = urllib.request.Request(
         f"{_sidecar_url()}/send-poll",
         data=payload,

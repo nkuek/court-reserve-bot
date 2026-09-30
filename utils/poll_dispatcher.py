@@ -8,7 +8,7 @@ from discord.ext import tasks
 
 from utils.discord import send_discord_notification
 from utils.poll_queue import due_polls, mark_attempt, mark_failed, mark_sent
-from utils.whatsapp import is_configured, send_poll
+from utils.whatsapp import POLL_OPTIONS, is_configured, send_poll
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ async def dispatch_due_polls():
             )
             continue
         try:
-            message_id = await asyncio.to_thread(send_poll, question)
+            message_id = await asyncio.to_thread(send_poll, question, POLL_OPTIONS, poll["target"])
             mark_sent(poll["id"], now)
             log.info(f"Sent WhatsApp poll \"{question}\" ({message_id})")
         except Exception as e:
