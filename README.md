@@ -204,6 +204,47 @@ fly deploy
 fly logs
 ```
 
+## WhatsApp group poll
+
+After a successful booking the bot posts a Yes/No poll to a WhatsApp group at noon
+the following day, worded like `Monday 10/5 8-11PM on 8A`. A small Node sidecar in
+`whatsapp/` holds a linked-device session for your own WhatsApp account, the same
+mechanism WhatsApp Desktop uses. No second number is needed.
+
+This uses an unofficial client library and is outside WhatsApp's terms of service.
+A few polls a week to a group you already post in looks like normal use, but the
+risk of Meta acting on the account is not zero.
+
+### One-time setup
+
+```bash
+# On the bot machine (or via remote.sh exec)
+cd whatsapp && npm install
+
+# Link the account. Scan the QR from WhatsApp > Linked devices,
+# or pass your number to get a pairing code instead.
+./scripts/remote.sh wa-link
+./scripts/remote.sh wa-link +15551234567
+
+# Run the sidecar, then find the group's JID
+./scripts/remote.sh wa-start
+./scripts/remote.sh wa-groups
+```
+
+Put the JID in `.env` as `WHATSAPP_GROUP_JID=...@g.us` and restart the bot. Without
+that variable both the queue and the sidecar are inert.
+
+### How it runs
+
+- `court_booking.py` queues the poll in `data/polls.db` when a booking lands.
+- `bot.py` checks the queue every minute and sends anything due through the sidecar.
+- A poll that cannot be sent keeps retrying for a day, then gives up and posts a
+  Discord failure notice so it can be sent by hand.
+- The sidecar listens on `127.0.0.1:8765` only. Override with `WHATSAPP_PORT` and
+  `WHATSAPP_SIDECAR_URL` if that port is taken.
+- Session keys live in `whatsapp/auth/`. Delete the folder and run `wa-link` again
+  if WhatsApp logs the device out.
+
 ## Remote control over SSH
 
 The bot runs on a separate Mac on the LAN, started by hand in a tmux session.
@@ -271,6 +312,8 @@ anything it reports as MISSING (`brew install tmux`).
 ./scripts/remote.sh logs 100        # last 100 log lines
 ./scripts/remote.sh follow          # stream the log
 ./scripts/remote.sh book --time 21:00 --duration 2   # one-off booking run
+./scripts/remote.sh wa-start        # start the WhatsApp sidecar
+./scripts/remote.sh wa-logs 100     # last 100 sidecar log lines
 ```
 
 `bot.py` only logs to stdout, so `start` pipes it through `tee` into
@@ -313,14 +356,20 @@ host.
 ├── fly.toml                  # Fly.io configuration
 ├── scripts/
 │   └── remote.sh             # Drive the remote Mac deployment over SSH
+├── whatsapp/
+│   ├── server.js             # Loopback HTTP front for the WhatsApp session
+│   └── client.js             # Linked-device session (Baileys)
 └── utils/
     ├── booking_date.py       # Date selection
     ├── direct_api.py         # Direct HTTP API booking (no browser UI)
     ├── discord.py            # Discord notifications
     ├── exceptions.py         # Custom exceptions
     ├── login.py              # Login utility
+    ├── poll_dispatcher.py    # Sends queued WhatsApp polls when due
+    ├── poll_queue.py         # SQLite queue of pending polls
     ├── user_store.py         # User credential storage
-    └── wait.py               # Wait-until functionality
+    ├── wait.py               # Wait-until functionality
+    └── whatsapp.py           # Poll wording and sidecar client
 ```
 
 ## Debugging

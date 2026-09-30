@@ -35,6 +35,7 @@ from utils.direct_api import (
     fire_parallel_bookings, COURT_IDS,
 )
 from utils.discord import notify_success, notify_failure, notify_start
+from utils.whatsapp import queue_booking_poll
 from utils.exceptions import CourtUnavailableError
 from utils.wait import wait_until, parse_wait_time
 
@@ -773,6 +774,7 @@ def _run_parallel_booking(
             log.warning(f"⚠️ Duration was reduced from {duration}h to {actual_duration}h (max available for this time slot)")
         sys.stdout.flush()
         notify_success(first_success['court'], booking_date_str, reservation_time, actual_duration)
+        queue_booking_poll(booking_date, target_time.hour, target_time.minute, actual_duration, first_success['court'])
         return True
     else:
         log.error("")
@@ -1298,6 +1300,7 @@ def main(
             log.info(f"\n🎉 BOOKED: {first['court']}")
             sys.stdout.flush()
             notify_success(first['court'], booking_date_str, reservation_time, duration)
+            queue_booking_poll(booking_date, hour, minute, duration, first['court'])
             return
         else:
             timed_out = [r for r in failures if r["response_status"] == 0]
@@ -1419,6 +1422,7 @@ def main(
 
             # Send Discord notification (use actual duration in case it was reduced)
             notify_success(court_name, booking_date_str, reservation_time, actual_duration)
+            queue_booking_poll(booking_date, hour, minute, actual_duration, court_name)
 
             # If we got here without throwing, we consider it a success and stop
             break

@@ -2,6 +2,7 @@ import os
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext, Playwright
 from playwright_stealth import Stealth
 
@@ -9,6 +10,9 @@ from playwright_stealth import Stealth
 BASE_URL = "https://app.courtreserve.com"
 RESERVATIONS_URL = "https://reservations.courtreserve.com"
 BACKEND_URL = "https://backend.courtreserve.com"
+
+# Facility timezone. Booking windows and poll send times are computed in it.
+LOCAL_TZ = ZoneInfo("America/New_York")
 
 # Organization-specific IDs
 ORG_ID = "8449"

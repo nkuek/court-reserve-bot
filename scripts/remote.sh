@@ -7,6 +7,7 @@
 #   COURTBOT_REPO    repo path on the remote       (default: ~/projects/court-reserve-bot)
 #   COURTBOT_TMUX    tmux session name             (default: courtbot)
 #   COURTBOT_PYTHON  interpreter, relative to repo (default: .venv/bin/python)
+#   COURTBOT_NODE    node binary for the WhatsApp sidecar (default: node)
 #
 # Usage: scripts/remote.sh <command> [args]
 #   doctor          check ssh reachability and the remote toolchain
@@ -19,6 +20,11 @@
 #   restart         stop --force, then start
 #   book [args]     run a one-off court_booking.py with the given args
 #   exec <cmd>      run an arbitrary command in the remote repo
+#   wa-link [phone] link WhatsApp once: QR in the terminal, or a pairing code for phone
+#   wa-start        start the WhatsApp sidecar in its own tmux session
+#   wa-stop         stop the WhatsApp sidecar
+#   wa-logs [n]     last n lines of the sidecar log (default 60)
+#   wa-groups       list the groups the linked account is in, with their JIDs
 
 set -euo pipefail
 
@@ -30,7 +36,11 @@ HOST="${COURTBOT_HOST:-courtbot}"
 REPO="${COURTBOT_REPO:-~/projects/court-reserve-bot}"
 SESSION="${COURTBOT_TMUX:-courtbot}"
 PYTHON="${COURTBOT_PYTHON:-.venv/bin/python}"
+NODE="${COURTBOT_NODE:-node}"
 LOGFILE="logs/bot.out"
+WA_SESSION="$SESSION-wa"
+WA_LOGFILE="logs/whatsapp.out"
+WA_PORT="${WHATSAPP_PORT:-8765}"
 
 # BSD pgrep has no -a (full command line), so match on ps output instead. The
 # [b] bracket keeps the grep from matching its own command line.
@@ -69,6 +79,7 @@ case "$cmd" in
     fi
     echo "==> remote toolchain"
     rsh 'for b in tmux git; do printf "    %-6s %s\n" "$b" "$(command -v $b || echo MISSING)"; done'
+    rsh "printf '    %-6s %s\n' node \"\$(command -v $NODE || echo MISSING)\""
     echo "==> repo at $REPO"
     rsh "printf '    python %s\n' \"\$(command -v $PYTHON || echo MISSING)\"; \
          printf '    .env   %s\n' \"\$([ -f .env ] && echo present || echo MISSING)\"; \
@@ -82,6 +93,8 @@ case "$cmd" in
     rsh 'out=$(tmux ls 2>/dev/null || true); [ -n "$out" ] && echo "$out" | sed "s/^/    /" || echo "    (none)"'
     echo "==> bot process"
     rsh "$BOT_PS_CMD"' ; [ -n "$out" ] && echo "$out" | sed "s/^/    /" || echo "    not running"'
+    echo "==> whatsapp sidecar"
+    rsh "curl -sS -m 3 http://127.0.0.1:$WA_PORT/health 2>/dev/null | sed 's/^/    /' || echo '    not running'"
     echo "==> revision"
     rsh "git log -1 --format='    %h %s (%cr)'"
     ;;
@@ -149,6 +162,42 @@ case "$cmd" in
   exec)
     [ $# -gt 0 ] || usage 1
     rsh "$*"
+    ;;
+
+  wa-link)
+    phone_arg=""
+    [ $# -gt 0 ] && phone_arg="--phone $1"
+    rsh_tty "cd whatsapp && $NODE server.js --link $phone_arg"
+    ;;
+
+  wa-start)
+    if rsh "tmux has-session -t $WA_SESSION 2>/dev/null"; then
+      echo "session '$WA_SESSION' is already running" >&2
+      exit 1
+    fi
+    rsh "mkdir -p logs && tmux new-session -d -s $WA_SESSION \
+         \"cd $REPO/whatsapp && $NODE server.js 2>&1 | tee -a ../$WA_LOGFILE\""
+    echo "started session '$WA_SESSION'"
+    ;;
+
+  wa-stop)
+    if rsh "tmux kill-session -t $WA_SESSION 2>/dev/null"; then
+      echo "stopped tmux session '$WA_SESSION'"
+    else
+      echo "no tmux session '$WA_SESSION'"
+    fi
+    ;;
+
+  wa-logs)
+    rsh "tail -n ${1:-60} $WA_LOGFILE 2>/dev/null || echo 'no $WA_LOGFILE yet — was the sidecar started with this script?'"
+    ;;
+
+  wa-groups)
+    rsh "curl -sS -m 10 http://127.0.0.1:$WA_PORT/groups" | python3 -c '
+import json, sys
+for g in json.load(sys.stdin):
+    print(f"{g[\"id\"]:<32} {g[\"subject\"]}")
+'
     ;;
 
   ""|-h|--help|help)

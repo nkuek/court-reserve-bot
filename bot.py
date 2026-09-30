@@ -24,14 +24,14 @@ import sys
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
 
 from discord.ext import tasks
-from constants import VALID_DURATIONS, MAX_DAYS_AHEAD
+from constants import VALID_DURATIONS, MAX_DAYS_AHEAD, LOCAL_TZ
+from utils.poll_dispatcher import start_poll_dispatcher
 from utils.user_store import (
     save_user_credentials,
     get_user_credentials,
@@ -63,7 +63,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 log = logging.getLogger(__name__)
-LOCAL_TZ = ZoneInfo("America/New_York")
 
 # Bot setup
 intents = discord.Intents.default()
@@ -612,6 +611,8 @@ async def on_ready():
     if not check_schedules.is_running():
         check_schedules.start()
         log.info("Background scheduler started")
+
+    start_poll_dispatcher()
 
 
 @tree.command(name="ping", description="Check if the bot is online")
