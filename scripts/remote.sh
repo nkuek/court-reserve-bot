@@ -43,8 +43,10 @@ WA_LOGFILE="logs/whatsapp.out"
 WA_PORT="${WHATSAPP_PORT:-8765}"
 
 # BSD pgrep has no -a (full command line), so match on ps output instead. The
-# [b] bracket keeps the grep from matching its own command line.
-BOT_PS_CMD='out=$(ps -Ao pid,etime,command | grep "[b]ot\.py" || true)'
+# The command must start with the interpreter, not merely contain bot.py: the
+# tmux server's own command line repeats the first session's command, and
+# killing the server takes every session down with it.
+BOT_PS_CMD='out=$(ps -Ao pid,etime,command | grep -E "^ *[0-9]+ +[^ ]+ +([^ ]*/)?(python[0-9.]*|uv) (run )?bot\.py" || true)'
 
 # A non-interactive ssh session on macOS gets a bare PATH that excludes
 # Homebrew, so tmux is not found unless we put it back.
