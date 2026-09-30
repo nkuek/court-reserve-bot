@@ -196,7 +196,7 @@ case "$cmd" in
     rsh "curl -sS -m 10 http://127.0.0.1:$WA_PORT/groups" | python3 -c '
 import json, sys
 for g in json.load(sys.stdin):
-    print(f"{g[\"id\"]:<32} {g[\"subject\"]}")
+    print(g["id"].ljust(32), g["subject"])
 '
     ;;
 
