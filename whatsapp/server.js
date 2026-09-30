@@ -10,6 +10,13 @@
 import http from "node:http";
 import { createClient } from "./client.js";
 
+// libsignal dumps every closed session, private keys included, through console.info.
+const nativeInfo = console.info;
+console.info = (...args) => {
+  if (typeof args[0] === "string" && args[0].startsWith("Closing session")) return;
+  nativeInfo(...args);
+};
+
 try {
   process.loadEnvFile(new URL("../.env", import.meta.url).pathname);
 } catch {
