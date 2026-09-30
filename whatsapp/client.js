@@ -6,6 +6,7 @@ import makeWASocket, {
   makeCacheableSignalKeyStore,
   useMultiFileAuthState,
 } from "@whiskeysockets/baileys";
+import { rmSync } from "node:fs";
 import pino from "pino";
 import qrcode from "qrcode-terminal";
 
@@ -33,7 +34,8 @@ export function createClient({ phone, onLinked, log }) {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
-      browser: Browsers.macOS("Desktop"),
+      // The library default. Other identities have been rejected at pairing time.
+      browser: Browsers.macOS("Chrome"),
       // An "online" linked device silences push notifications on the phone.
       markOnlineOnConnect: false,
       syncFullHistory: false,
@@ -66,12 +68,20 @@ export function createClient({ phone, onLinked, log }) {
 
       if (connection === "close") {
         connected = false;
+        pairingRequested = false;
         const code = lastDisconnect?.error?.output?.statusCode;
+        const reason = lastDisconnect?.error?.message ?? "";
         if (code === DisconnectReason.loggedOut) {
-          log(`Logged out by WhatsApp. Delete ${authDir()} and link again.`);
-          process.exit(1);
+          if (state.creds.registered) {
+            log(`Logged out by WhatsApp. Delete ${authDir()} and link again.`);
+            process.exit(1);
+          }
+          // A pairing attempt that expired leaves half-made creds the server now rejects.
+          log("Pairing attempt expired, starting over with fresh keys");
+          rmSync(authDir(), { recursive: true, force: true });
+        } else {
+          log(`Connection closed (status ${code ?? "unknown"} ${reason}), reconnecting`);
         }
-        log(`Connection closed (status ${code ?? "unknown"}), reconnecting`);
         setTimeout(start, RECONNECT_MS);
       }
     });

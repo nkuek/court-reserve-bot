@@ -94,7 +94,7 @@ case "$cmd" in
     echo "==> bot process"
     rsh "$BOT_PS_CMD"' ; [ -n "$out" ] && echo "$out" | sed "s/^/    /" || echo "    not running"'
     echo "==> whatsapp sidecar"
-    rsh "curl -sS -m 3 http://127.0.0.1:$WA_PORT/health 2>/dev/null | sed 's/^/    /' || echo '    not running'"
+    rsh "out=\$(curl -sS -m 3 http://127.0.0.1:$WA_PORT/health 2>/dev/null || true); [ -n \"\$out\" ] && echo \"    \$out\" || echo '    not running'"
     echo "==> revision"
     rsh "git log -1 --format='    %h %s (%cr)'"
     ;;
