@@ -7,6 +7,7 @@
 //   GET  /health      {connected, me, group}
 //   GET  /groups      [{id, subject}]
 //   POST /send-poll   {question, options?, selectableCount?, to?} -> {id}
+//   POST /send-message {text, to?} -> {id}
 import http from "node:http";
 import { createClient } from "./client.js";
 
@@ -93,6 +94,16 @@ async function handle(req, res) {
       selectableCount: body.selectableCount ?? 1,
     });
     log(`Sent poll "${body.question}" to ${to}`);
+    return json(res, 200, { id });
+  }
+
+  if (req.method === "POST" && req.url === "/send-message") {
+    const body = await readBody(req);
+    const to = body.to ?? GROUP_JID;
+    if (!to) return json(res, 400, { error: "no target: set WHATSAPP_GROUP_JID or pass `to`" });
+    if (!body.text) return json(res, 400, { error: "text is required" });
+    const id = await client.sendText(to, body.text);
+    log(`Sent message to ${to}: "${body.text.split("\n")[0]}"`);
     return json(res, 200, { id });
   }
 

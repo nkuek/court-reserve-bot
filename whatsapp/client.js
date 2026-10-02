@@ -99,10 +99,16 @@ export function createClient({ phone, onLinked, log }) {
     return sent?.key?.id ?? null;
   }
 
+  async function sendText(jid, text) {
+    const sent = await sock.sendMessage(jid, { text });
+    return sent?.key?.id ?? null;
+  }
+
   return {
     start,
     listGroups,
     sendPoll,
+    sendText,
     isConnected: () => connected,
     me: () => sock?.user?.id ?? null,
   };
