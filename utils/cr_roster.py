@@ -249,3 +249,29 @@ def sync_court(page: Page, day: date, court: str, players: list[dict], booker: s
         "players": [p["name"] for p in after["players"]],
         "unmatched": missing,
     }
+
+
+def cancel(page: Page, day: date, court: str, reason: str = "Cancel") -> dict:
+    """Cancels this account's reservation of a court on a day."""
+    rid = find_reservation(page, day, court)
+    if not rid:
+        return {"status": "not_found"}
+    _open(page, rid)
+    result = page.evaluate(
+        """async ([org, rid, reason]) => {
+            const h = await (await fetch(`/Online/MyProfile/CancelReservation/${org}?reservationId=${rid}`,
+                {headers: {'X-Requested-With': 'XMLHttpRequest'}})).text();
+            const form = new DOMParser().parseFromString(h, 'text/html').querySelector('#cancel-reservation-form');
+            const fd = new URLSearchParams();
+            for (const el of form.querySelectorAll('input[name], textarea[name]')) fd.append(el.name, el.value);
+            fd.set('SelectedReservation.CancellationReason', reason);
+            const r = await fetch(form.getAttribute('action'), {method: 'POST', body: fd,
+                headers: {'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'}});
+            return {status: r.status, body: await r.text()};
+        }""",
+        [ORG_ID, rid, reason],
+    )
+    # The list of active reservations is the proof. The response shape varies by outcome.
+    if find_reservation(page, day, court) == rid:
+        raise RuntimeError(f"Still booked after cancelling: {result['status']} {result['body'][:300]}")
+    return {"status": "cancelled", "reservation": rid}

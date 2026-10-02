@@ -1,4 +1,7 @@
-"""Keeps the bot's CourtReserve reservations in step with the sign-up app's posted lineups."""
+"""Keeps the bot's CourtReserve reservations in step with the sign-up app.
+
+Copies settled lineups onto the courts it booked and cancels courts the app dropped for too few players.
+"""
 
 import asyncio
 import hashlib
@@ -71,8 +74,23 @@ def due_jobs(sessions: list[dict], state: dict, booker: str, now: float) -> list
     return jobs
 
 
+def due_cancellations(pending: list[dict], state: dict, booker: str, now: float) -> tuple[list[dict], list[dict]]:
+    """Dropped courts the bot cancels itself, and ones another member booked."""
+    own, others = [], []
+    for c in pending:
+        if c["bookedBy"].lower() != booker.lower():
+            others.append(c)
+            continue
+        key = f"cancel {c['id']}"
+        if now - state.get(key, {}).get("failed_at", 0) < RETRY_AFTER_S:
+            continue
+        own.append({"key": key, "id": c["id"], "action": "cancel", "date": c["date"], "court": c["court"]})
+    return own, others
+
+
 async def _run(jobs: list[dict]) -> list[dict]:
-    payload = json.dumps([{k: j[k] for k in ("date", "court", "players")} for j in jobs]).encode()
+    fields = ("action", "date", "court", "players")
+    payload = json.dumps([{k: j[k] for k in fields if k in j} for j in jobs]).encode()
     proc = await asyncio.create_subprocess_exec(
         sys.executable, str(SCRIPT),
         cwd=ROOT, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
@@ -90,6 +108,28 @@ async def _run(jobs: list[dict]) -> list[dict]:
     if start < 0 or end < 0:
         raise RuntimeError(f"roster_sync.py exited {proc.returncode} without a result")
     return json.loads(text[start + len("===RESULT_JSON==="):end])
+
+
+async def _record_cancel(state: dict, job: dict, result: dict, now: float) -> None:
+    entry = state.setdefault(job["key"], {})
+    label = f"Court {job['court']} on {job['date']}"
+    if result["status"] == "error":
+        entry["failed_at"] = now
+        if not entry.get("alerted"):
+            entry["alerted"] = True
+            send_discord_notification(
+                f"**{label}:** too few players signed up, but cancelling it in CourtReserve failed.\n"
+                f"{result.get('error', '')[:500]}\nThe bot retries every {RETRY_AFTER_S // 60} minutes. Cancel it by hand if it's urgent.",
+                title="Court Cancel Failed",
+                success=False,
+            )
+        return
+    await asyncio.to_thread(signup_app.mark_cancelled, job["id"])
+    state.pop(job["key"], None)
+    if result["status"] == "cancelled":
+        send_discord_notification(f"**{label}:** cancelled in CourtReserve. Fewer than 4 signed up.", title="Court Cancelled")
+    else:
+        log.info(f"{label} was already gone from CourtReserve")
 
 
 def _record(state: dict, job: dict, result: dict, now: float) -> None:
@@ -133,11 +173,25 @@ async def sync_rosters():
     except Exception as e:
         log.warning(f"Could not read lineups from the sign-up app: {e}")
         return
+    try:
+        pending = await asyncio.to_thread(signup_app.cancellations)
+    except Exception as e:
+        log.warning(f"Could not read court cancellations from the sign-up app: {e}")
+        pending = []
     state = _load_state()
-    jobs = due_jobs(sessions, state, booker, time.time())
+    cancels, others = due_cancellations(pending, state, booker, time.time())
+    for c in others:
+        # Another member's reservation sits on their account, so they cancel it.
+        send_discord_notification(
+            f"**Court {c['court']} on {c['date']}:** dropped for too few players. {c['bookedBy']} booked it, so they need to cancel it in CourtReserve.",
+            title="Court Needs Cancelling",
+            success=False,
+        )
+        await asyncio.to_thread(signup_app.mark_cancelled, c["id"])
+    jobs = cancels + due_jobs(sessions, state, booker, time.time())
     if not jobs:
         return
-    log.info(f"Copying {len(jobs)} lineup(s) to CourtReserve: {', '.join(j['key'] for j in jobs)}")
+    log.info(f"CourtReserve updates: {', '.join(j['key'] for j in jobs)}")
     try:
         results = await _run(jobs)
     except Exception as e:
@@ -145,6 +199,9 @@ async def sync_rosters():
         results = [{"status": "error", "error": str(e)} for _ in jobs]
     now = time.time()
     for job, result in zip(jobs, results):
-        log.info(f"Roster {job['key']}: {result['status']}")
-        _record(state, job, result, now)
+        log.info(f"CourtReserve {job['key']}: {result['status']}")
+        if job.get("action") == "cancel":
+            await _record_cancel(state, job, result, now)
+        else:
+            _record(state, job, result, now)
     _save_state(state)

@@ -232,6 +232,11 @@ exact search, and the bot's favorites break ties between members who share a nam
 cached in `data/cr_members.json`. Unmatched names and failures go to Discord once per lineup.
 The loop skips 19:40 to 20:15 so it never logs in during the 19:55 bookings.
 
+When sign-ups close, the app keeps only as many courts as its sign-ups fill at four players
+each, guests included, and drops the latest-added courts first. The same loop cancels each
+dropped court the bot booked in CourtReserve, with "Cancel" as the reason, and reports it on
+Discord. A dropped court another member booked gets a Discord note asking them to cancel it.
+
 Configure the sign-up app in `.env`:
 
 ```bash

@@ -1,7 +1,8 @@
-"""Copies sign-up app lineups onto CourtReserve reservations.
+"""Copies sign-up app lineups onto CourtReserve reservations and cancels dropped courts.
 
-Reads a JSON list of courts on stdin, each {"date", "court", "players": [{"name", "crName"}]},
-and prints one result per court between the result markers. Logs in once for all of them.
+Reads a JSON list of jobs on stdin. A lineup job is {"date", "court", "players": [{"name", "crName"}]}.
+A cancel job is {"action": "cancel", "date", "court"}. Prints one result per job between the result
+markers. Logs in once for all of them.
 """
 
 import json
@@ -14,7 +15,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from constants import close_browser, get_page
-from utils.cr_roster import sync_court
+from utils.cr_roster import cancel, sync_court
 from utils.login import login
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -38,7 +39,11 @@ def main() -> None:
         for job in jobs:
             label = f"{job['court']} on {job['date']}"
             try:
-                result = sync_court(page, date.fromisoformat(job["date"]), job["court"], job["players"], booker)
+                day = date.fromisoformat(job["date"])
+                if job.get("action") == "cancel":
+                    result = cancel(page, day, job["court"])
+                else:
+                    result = sync_court(page, day, job["court"], job["players"], booker)
                 log.info(f"{label}: {result['status']} {json.dumps({k: v for k, v in result.items() if k != 'status'})}")
             except Exception as e:
                 log.exception(f"{label}: failed")

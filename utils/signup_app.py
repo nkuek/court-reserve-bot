@@ -67,3 +67,12 @@ def mark_notice_sent(notice_id: int) -> None:
 def rosters() -> list[dict]:
     """Each upcoming session's placed players per court, for sessions whose lineup is posted."""
     return _request("GET", "/bot/rosters")["sessions"]
+
+
+def cancellations() -> list[dict]:
+    """Courts the app dropped for too few players that still need cancelling."""
+    return _request("GET", "/bot/cancellations")["cancellations"]
+
+
+def mark_cancelled(cancellation_id: int) -> None:
+    _request("POST", f"/bot/cancellations/{cancellation_id}/done", {})
