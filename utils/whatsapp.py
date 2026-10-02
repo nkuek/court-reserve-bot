@@ -100,9 +100,12 @@ def send_poll(question: str, options: list[str] = POLL_OPTIONS, to: str | None =
         return json.loads(resp.read().decode()).get("id")
 
 
-def send_message(text: str, to: str | None = None) -> str | None:
-    """Post a text message through the sidecar. Raises on any transport or sidecar error."""
-    body = {"text": text}
+def send_message(text: str, to: str | None = None, mentions: list[str] | None = None) -> str | None:
+    """Post a text message through the sidecar. Raises on any transport or sidecar error.
+
+    Each mention ID needs a matching "@<id number>" in the text to tag that person.
+    """
+    body = {"text": text, "mentions": mentions or []}
     if to:
         body["to"] = to
     req = urllib.request.Request(
@@ -113,6 +116,21 @@ def send_message(text: str, to: str | None = None) -> str | None:
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode()).get("id")
+
+
+def group_members() -> list[dict]:
+    """The configured group's members as {id, phone, name}, phone and name when known."""
+    with urllib.request.urlopen(f"{_sidecar_url()}/group-members", timeout=15) as resp:
+        return json.loads(resp.read().decode())
+
+
+def member_label(member: dict) -> str:
+    """A WhatsApp name, or the number's last four digits. Full numbers never leave this machine."""
+    if member.get("name"):
+        return member["name"]
+    if member.get("phone"):
+        return f"••{member['phone'][-4:]}"
+    return "Unknown member"
 
 
 def sidecar_health() -> dict:

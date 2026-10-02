@@ -44,3 +44,21 @@ def add_court(start: datetime, duration_hours: float, court_short: str) -> None:
 def signup_post(date: str) -> str:
     """The day's sign-up post as it reads right now, link and passcode included."""
     return _request("GET", "/bot/post?" + urllib.parse.urlencode({"date": date}))["text"]
+
+
+def push_members(members: list[dict]) -> int:
+    """Share the WhatsApp group's members, so the organizer can link names to them."""
+    return _request("POST", "/bot/members", {"members": members})["count"]
+
+
+def outbox() -> dict:
+    """Final lineups and waitlist move-ups that are ready to post, each with its mention IDs."""
+    return _request("GET", "/bot/outbox")
+
+
+def mark_lineup_posted(session_id: str) -> None:
+    _request("POST", f"/bot/lineups/{session_id}/posted", {})
+
+
+def mark_notice_sent(notice_id: int) -> None:
+    _request("POST", f"/bot/notices/{notice_id}/sent", {})

@@ -216,6 +216,13 @@ the session), the post goes out right away.
 
 Polls queued before this change still send as Yes/No polls.
 
+Once sign-ups close (noon the day before, after the app draws courts), the bot posts the
+final lineup to the group. If someone then withdraws, it posts a note for whoever moves up
+from the waitlist. Players the organizer has linked to a WhatsApp account in the app's Name
+list get tagged in both. Every hour the bot shares the group's members with the app for that
+picker: WhatsApp names where the sidecar has seen them, otherwise the last four digits of a
+number. Full numbers stay on this machine.
+
 Configure the sign-up app in `.env`:
 
 ```bash
