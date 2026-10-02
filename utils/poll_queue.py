@@ -1,4 +1,8 @@
-"""SQLite queue of WhatsApp polls waiting for their send time."""
+"""SQLite queue of WhatsApp posts waiting for their send time.
+
+A row is a Yes/No poll or a day's sign-up post. A sign-up post keeps only its date and is
+written at send time, so it reflects who has signed up by then.
+"""
 
 import sqlite3
 from datetime import datetime, timezone
@@ -27,10 +31,11 @@ def _connect() -> sqlite3.Connection:
             target TEXT
         )
     """)
-    try:
-        conn.execute("ALTER TABLE polls ADD COLUMN target TEXT")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
+    for column in ("target TEXT", "kind TEXT NOT NULL DEFAULT 'poll'", "session_date TEXT"):
+        try:
+            conn.execute(f"ALTER TABLE polls ADD COLUMN {column}")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
     conn.commit()
     return conn
 
@@ -61,12 +66,26 @@ def enqueue_poll(question: str, send_at: datetime, target: str | None = None) ->
         conn.close()
 
 
+def enqueue_post(session_date: str, send_at: datetime, target: str | None = None) -> bool:
+    """Queue a day's sign-up post. Returns False when that day's post is already queued or sent."""
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO polls (question, send_at, created_at, target, kind, session_date) VALUES (?, ?, ?, ?, 'signup', ?)",
+            (f"Sign-up post for {session_date}", _utc_iso(send_at), _utc_iso(datetime.now(timezone.utc)), target, session_date),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def due_polls(now: datetime) -> list[dict]:
     conn = _connect()
     try:
         rows = conn.execute(
             """
-            SELECT id, question, send_at, attempts, target
+            SELECT id, question, send_at, attempts, target, kind, session_date
             FROM polls
             WHERE sent_at IS NULL AND failed_at IS NULL AND send_at <= ?
             ORDER BY send_at
@@ -80,6 +99,8 @@ def due_polls(now: datetime) -> list[dict]:
                 "send_at": _from_utc_iso(r["send_at"]),
                 "attempts": r["attempts"],
                 "target": r["target"],
+                "kind": r["kind"],
+                "session_date": r["session_date"],
             }
             for r in rows
         ]

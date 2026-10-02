@@ -204,10 +204,29 @@ fly deploy
 fly logs
 ```
 
-## WhatsApp group poll
+## WhatsApp group sign-up post
 
-After a successful booking the bot posts a Yes/No poll to a WhatsApp group at noon
-the following day, worded like `Monday 10/5 8-11PM on 8A`. A small Node sidecar in
+After a successful booking the bot lists the court in the pickleball sign-up app, with
+`SIGNUP_BOOKER_NAME` as the booker, who is signed up and placed on that court. At noon
+the following day it posts the app's sign-up post to the WhatsApp group: the date, the
+courts, who's already in, spots left, the sign-up link, and the passcode. The post is
+written at send time, so it's current. A second court booked for the same day joins the
+same post. When noon the next day would land after sign-ups close (noon the day before
+the session), the post goes out right away.
+
+Polls queued before this change still send as Yes/No polls.
+
+Configure the sign-up app in `.env`:
+
+```bash
+SIGNUP_APP_URL=https://pickleball-signup.nkuek1.workers.dev
+SIGNUP_BOT_TOKEN=...      # matches the app's BOT_TOKEN secret
+SIGNUP_BOOKER_NAME=Nick Kuek
+```
+
+Without these, bookings still succeed and nothing is posted.
+
+A small Node sidecar in
 `whatsapp/` holds a linked-device session for your own WhatsApp account, the same
 mechanism WhatsApp Desktop uses. No second number is needed.
 
