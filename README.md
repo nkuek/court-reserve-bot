@@ -223,6 +223,15 @@ list get tagged in both. Every hour the bot shares the group's members with the 
 picker: WhatsApp names where the sidecar has seen them, otherwise the last four digits of a
 number. Full numbers stay on this machine.
 
+Once a lineup is posted, the bot also copies each court's players onto the CourtReserve
+reservation it booked (`roster_sync.py`, run every 5 minutes by `utils/roster_loop.py`). It only
+acts when a court's lineup changes. One player replacing another goes through the reservation's
+Sub button. Anything bigger goes through Edit Reservation in one save. Placeholders stay while
+the reservation needs four players or a name has no CourtReserve match. Names map to members by
+exact search, and the bot's favorites break ties between members who share a name. Matches are
+cached in `data/cr_members.json`. Unmatched names and failures go to Discord once per lineup.
+The loop skips 19:40 to 20:15 so it never logs in during the 19:55 bookings.
+
 Configure the sign-up app in `.env`:
 
 ```bash

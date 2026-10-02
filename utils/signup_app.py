@@ -62,3 +62,8 @@ def mark_lineup_posted(session_id: str) -> None:
 
 def mark_notice_sent(notice_id: int) -> None:
     _request("POST", f"/bot/notices/{notice_id}/sent", {})
+
+
+def rosters() -> list[dict]:
+    """Each upcoming session's placed players per court, for sessions whose lineup is posted."""
+    return _request("GET", "/bot/rosters")["sessions"]

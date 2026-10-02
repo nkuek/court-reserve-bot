@@ -1,7 +1,8 @@
 """Background loops for the WhatsApp group.
 
 One sends queued posts once their send time passes. One relays the sign-up app's final lineups
-and waitlist move-ups. One shares the group's members with the app for tagging.
+and waitlist move-ups. One shares the group's members with the app for tagging. The roster loop
+in utils/roster_loop.py copies posted lineups onto the bot's CourtReserve reservations.
 """
 
 import asyncio
@@ -13,6 +14,7 @@ from discord.ext import tasks
 from utils.discord import send_discord_notification
 from utils.poll_queue import due_polls, mark_attempt, mark_failed, mark_sent
 from utils import signup_app
+from utils.roster_loop import sync_rosters
 from utils.signup_app import signup_post
 from utils.whatsapp import POLL_OPTIONS, group_members, is_configured, member_label, send_message, send_poll
 
@@ -105,7 +107,7 @@ def start_poll_dispatcher() -> None:
     if not signup_app.is_configured():
         log.info("Sign-up app not configured, lineup relay disabled")
         return
-    for loop in (relay_app_outbox, sync_group_members):
+    for loop in (relay_app_outbox, sync_group_members, sync_rosters):
         if not loop.is_running():
             loop.start()
-    log.info("Sign-up app lineup relay and member sync started")
+    log.info("Sign-up app lineup relay, member sync, and CourtReserve roster sync started")
