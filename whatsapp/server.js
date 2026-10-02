@@ -7,7 +7,8 @@
 //   GET  /health      {connected, me, group}
 //   GET  /groups      [{id, subject}]
 //   POST /send-poll   {question, options?, selectableCount?, to?} -> {id}
-//   POST /send-message {text, to?} -> {id}
+//   POST /send-message {text, to?, mentions?} -> {id}
+//   GET  /group-members [{id, phone, name}] for the configured group
 import http from "node:http";
 import { createClient } from "./client.js";
 
@@ -97,12 +98,17 @@ async function handle(req, res) {
     return json(res, 200, { id });
   }
 
+  if (req.method === "GET" && req.url === "/group-members") {
+    if (!GROUP_JID) return json(res, 400, { error: "WHATSAPP_GROUP_JID is not set" });
+    return json(res, 200, await client.groupMembers(GROUP_JID));
+  }
+
   if (req.method === "POST" && req.url === "/send-message") {
     const body = await readBody(req);
     const to = body.to ?? GROUP_JID;
     if (!to) return json(res, 400, { error: "no target: set WHATSAPP_GROUP_JID or pass `to`" });
     if (!body.text) return json(res, 400, { error: "text is required" });
-    const id = await client.sendText(to, body.text);
+    const id = await client.sendText(to, body.text, Array.isArray(body.mentions) ? body.mentions : []);
     log(`Sent message to ${to}: "${body.text.split("\n")[0]}"`);
     return json(res, 200, { id });
   }

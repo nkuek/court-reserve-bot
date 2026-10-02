@@ -6,13 +6,16 @@ import makeWASocket, {
   makeCacheableSignalKeyStore,
   useMultiFileAuthState,
 } from "@whiskeysockets/baileys";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import pino from "pino";
 import qrcode from "qrcode-terminal";
 
 /** Session keys live here. Deleting the folder forces a fresh link. */
 export const authDir = () =>
   process.env.WHATSAPP_AUTH_DIR ?? new URL("./auth/", import.meta.url).pathname;
+
+/** WhatsApp display names seen in chats, by participant ID. Group metadata rarely carries names. */
+const namesFile = () => new URL("./names.json", import.meta.url).pathname;
 
 /** Delay before reopening the socket after a non-fatal disconnect. */
 const RECONNECT_MS = 5000;
@@ -22,6 +25,17 @@ export function createClient({ phone, onLinked, log }) {
   let sock = null;
   let connected = false;
   let pairingRequested = false;
+  const names = new Map();
+  try {
+    for (const [id, name] of Object.entries(JSON.parse(readFileSync(namesFile(), "utf8")))) names.set(id, name);
+  } catch {
+    // No names seen yet.
+  }
+  function rememberName(id, name) {
+    if (!id || !name || names.get(id) === name) return;
+    names.set(id, name);
+    writeFileSync(namesFile(), JSON.stringify(Object.fromEntries(names), null, 2));
+  }
 
   async function start() {
     const { state, saveCreds } = await useMultiFileAuthState(authDir());
@@ -42,6 +56,19 @@ export function createClient({ phone, onLinked, log }) {
     });
 
     sock.ev.on("creds.update", saveCreds);
+
+    // A group message carries its sender's own display name. Messages may name the sender by
+    // a phone-number ID and an anonymous ID, so both get remembered.
+    sock.ev.on("messages.upsert", ({ messages }) => {
+      for (const m of messages) {
+        if (!m.pushName || m.key.fromMe) continue;
+        rememberName(m.key.participant, m.pushName);
+        rememberName(m.key.participantAlt, m.pushName);
+      }
+    });
+    sock.ev.on("contacts.upsert", (contacts) => {
+      for (const c of contacts) rememberName(c.id, c.notify || c.name);
+    });
 
     sock.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect, qr } = update;
@@ -99,8 +126,20 @@ export function createClient({ phone, onLinked, log }) {
     return sent?.key?.id ?? null;
   }
 
-  async function sendText(jid, text) {
-    const sent = await sock.sendMessage(jid, { text });
+  /** Members of a group, with the display name when one has been seen. */
+  async function groupMembers(jid) {
+    const meta = await sock.groupMetadata(jid);
+    return meta.participants.map((p) => ({
+      id: p.id,
+      phone: p.phoneNumber?.split("@")[0] ?? (p.id.endsWith("@s.whatsapp.net") ? p.id.split("@")[0] : null),
+      name: names.get(p.id) || names.get(p.phoneNumber) || p.notify || p.name || null,
+    }));
+  }
+
+  // A mention needs both the ID in `mentions` and "@<id number>" in the text, which WhatsApp
+  // then shows as the person's name.
+  async function sendText(jid, text, mentions = []) {
+    const sent = await sock.sendMessage(jid, { text, mentions });
     return sent?.key?.id ?? null;
   }
 
@@ -109,6 +148,7 @@ export function createClient({ phone, onLinked, log }) {
     listGroups,
     sendPoll,
     sendText,
+    groupMembers,
     isConnected: () => connected,
     me: () => sock?.user?.id ?? null,
   };

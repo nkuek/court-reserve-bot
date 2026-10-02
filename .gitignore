@@ -60,3 +60,4 @@ node_modules/
 
 # WhatsApp linked-device session keys
 whatsapp/auth/
+whatsapp/names.json
