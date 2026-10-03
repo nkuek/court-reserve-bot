@@ -4,12 +4,12 @@ import json
 import logging
 import os
 import re
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from playwright.sync_api import Page
 
-from constants import BASE_URL, ORG_ID, SCHEDULE_ID, get_browser
+from constants import BASE_URL, LOCAL_TZ, ORG_ID, SCHEDULE_ID, get_browser
 from utils.login import _attempt_login
 
 log = logging.getLogger(__name__)
@@ -30,6 +30,28 @@ IPHONE_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 "
     "(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
 )
+
+
+class TooEarly(RuntimeError):
+    """A player can't be added yet: the session is past their own advance-booking window."""
+
+    def __init__(self, message: str, limit: datetime):
+        super().__init__(message)
+        self.limit = limit
+
+
+# CourtReserve's wording for a player outside their booking window, e.g. "up to 10/8/2026, 1:09 PM".
+TOO_EARLY_RE = re.compile(r"only allowed to reserve up to (\d{1,2}/\d{1,2}/\d{4}, \d{1,2}:\d{2} [AP]M)")
+
+
+def _check(kind: str, status: int, body: str) -> None:
+    if status == 200 and '"isValid":true' in body:
+        return
+    m = TOO_EARLY_RE.search(body)
+    if m:
+        limit = datetime.strptime(m.group(1), "%m/%d/%Y, %I:%M %p").replace(tzinfo=LOCAL_TZ)
+        raise TooEarly(json.loads(body).get("message", m.group(0)), limit)
+    raise RuntimeError(f"{kind} rejected: {status} {body[:300]}")
 
 
 def _ordinal(n: int) -> str:
@@ -78,7 +100,7 @@ def current_players(page: Page, rid: str) -> dict:
                 const f = k => val(`InitialMembers[${i}].${k}`);
                 players.push({org: f('MemberOrgId'), member: f('MemberId'), name: `${f('FirstName')} ${f('LastName')}`.trim()});
             }
-            return {self: val('MemberId'), players};
+            return {self: val('MemberId'), start: `${val('Date')} ${val('StartTime')}`, players};
         }""" % ORG_ID,
         rid,
     )
@@ -182,8 +204,7 @@ def swap(page: Page, rid: str, out_org: str, in_member: str) -> None:
         }""",
         [ORG_ID, rid, out_org, in_member],
     )
-    if result["status"] != 200 or '"isValid":true' not in result["body"]:
-        raise RuntimeError(f"Swap rejected: {result['status']} {result['body'][:300]}")
+    _check("Swap", result["status"], result["body"])
 
 
 def edit(page: Page, rid: str, remove_orgs: list[str], add_orgs: list[str]) -> None:
@@ -210,9 +231,7 @@ def edit(page: Page, rid: str, remove_orgs: list[str], add_orgs: list[str]) -> N
         raise RuntimeError(f"Edit form never loaded players {blank}")
     with page.expect_response(lambda r: "UpdateMyReservation" in r.url and r.request.method == "POST", timeout=30000) as resp:
         page.evaluate("submitUpdateReservation()")
-    body = resp.value.text()
-    if resp.value.status != 200 or '"isValid":true' not in body:
-        raise RuntimeError(f"Edit rejected: {resp.value.status} {body[:300]}")
+    _check("Edit", resp.value.status, resp.value.text())
 
 
 def sync_court(page: Page, day: date, court: str, players: list[dict], booker: str) -> dict:
@@ -227,14 +246,20 @@ def sync_court(page: Page, day: date, court: str, players: list[dict], booker: s
     missing.update({n: "guest without a name" for n in unnamed})
     remove, add = plan(current, list(found.values()), len(missing))
 
-    if not remove and not add:
-        action = "unchanged"
-    elif len(remove) == 1 and len(add) == 1:
-        swap(page, rid, remove[0]["org"], add[0]["member"])
-        action = "swapped"
-    else:
-        edit(page, rid, [p["org"] for p in remove], [a["org"] for a in add])
-        action = "edited"
+    try:
+        if not remove and not add:
+            action = "unchanged"
+        elif len(remove) == 1 and len(add) == 1:
+            swap(page, rid, remove[0]["org"], add[0]["member"])
+            action = "swapped"
+        else:
+            edit(page, rid, [p["org"] for p in remove], [a["org"] for a in add])
+            action = "edited"
+    except TooEarly as e:
+        # The window slides with the clock, so the player becomes addable that far before the start.
+        start = datetime.strptime(current["start"], "%m/%d/%Y %I:%M %p").replace(tzinfo=LOCAL_TZ)
+        window = e.limit - datetime.now(LOCAL_TZ)
+        return {"status": "too_early", "reservation": rid, "retry_at": (start - window).timestamp(), "reason": str(e)}
 
     after = current_players(page, rid) if action != "unchanged" else current
     have = {p["org"] for p in after["players"]}

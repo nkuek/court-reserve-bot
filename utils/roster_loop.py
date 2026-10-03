@@ -68,7 +68,7 @@ def due_jobs(sessions: list[dict], state: dict, booker: str, now: float) -> list
             entry = state.get(key, {})
             if entry.get("synced") == fp:
                 continue
-            if entry.get("failed") == fp and now - entry.get("failed_at", 0) < RETRY_AFTER_S:
+            if entry.get("failed") == fp and now < entry.get("retry_at", entry.get("failed_at", 0) + RETRY_AFTER_S):
                 continue
             jobs.append({"key": key, "fingerprint": fp, "date": s["date"], "court": c["court"], "players": c["players"]})
     return jobs
@@ -136,8 +136,14 @@ def _record(state: dict, job: dict, result: dict, now: float) -> None:
     entry = state.setdefault(job["key"], {})
     fp = job["fingerprint"]
     label = f"Court {job['court']} on {job['date']}"
+    if result["status"] == "too_early":
+        # Players outside their booking window become addable at a known time. That's no failure.
+        entry.update(failed=fp, failed_at=now, retry_at=result["retry_at"] + 60)
+        log.info(f"{label}: players can't be added until {datetime.fromtimestamp(result['retry_at'], LOCAL_TZ):%a %-m/%-d %-I:%M %p}")
+        return
     if result["status"] == "error":
         entry.update(failed=fp, failed_at=now)
+        entry.pop("retry_at", None)
         if entry.get("alerted") != fp:
             entry["alerted"] = fp
             send_discord_notification(
@@ -148,6 +154,7 @@ def _record(state: dict, job: dict, result: dict, now: float) -> None:
         return
     entry.pop("failed", None)
     entry.pop("failed_at", None)
+    entry.pop("retry_at", None)
     entry["synced"] = fp
     problems = []
     if result["status"] == "not_found":
