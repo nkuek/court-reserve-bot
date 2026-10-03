@@ -22,6 +22,8 @@ log = logging.getLogger(__name__)
 
 # A post still unsent this long after its send time is abandoned.
 GIVE_UP_AFTER = timedelta(hours=24)
+# Sign-up posts go out about five days ahead, so a 7-day pin lasts past sign-up close.
+SIGNUP_PIN_SECONDS = 7 * 24 * 3600
 
 
 @tasks.loop(minutes=1)
@@ -41,7 +43,7 @@ async def dispatch_due_polls():
         try:
             if poll["kind"] == "signup":
                 text = await asyncio.to_thread(signup_post, poll["session_date"])
-                message_id = await asyncio.to_thread(send_message, text, poll["target"])
+                message_id = await asyncio.to_thread(send_message, text, poll["target"], None, SIGNUP_PIN_SECONDS)
             else:
                 message_id = await asyncio.to_thread(send_poll, question, POLL_OPTIONS, poll["target"])
             mark_sent(poll["id"], now)

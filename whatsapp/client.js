@@ -4,6 +4,7 @@ import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  proto,
   useMultiFileAuthState,
 } from "@whiskeysockets/baileys";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -138,9 +139,19 @@ export function createClient({ phone, onLinked, log }) {
 
   // A mention needs both the ID in `mentions` and "@<id number>" in the text, which WhatsApp
   // then shows as the person's name.
-  async function sendText(jid, text, mentions = []) {
+  // WhatsApp only offers pins of 24 hours, 7 days, or 30 days. A failed pin leaves the message sent.
+  async function sendText(jid, text, mentions = [], pinSeconds = 0) {
     const sent = await sock.sendMessage(jid, { text, mentions });
-    return sent?.key?.id ?? null;
+    const result = { id: sent?.key?.id ?? null, pinned: false };
+    if (pinSeconds && sent?.key) {
+      try {
+        await sock.sendMessage(jid, { pin: sent.key, type: proto.PinInChat.Type.PIN_FOR_ALL, time: pinSeconds });
+        result.pinned = true;
+      } catch (e) {
+        result.pinError = e.message;
+      }
+    }
+    return result;
   }
 
   return {

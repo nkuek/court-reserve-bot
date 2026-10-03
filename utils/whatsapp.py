@@ -100,14 +100,19 @@ def send_poll(question: str, options: list[str] = POLL_OPTIONS, to: str | None =
         return json.loads(resp.read().decode()).get("id")
 
 
-def send_message(text: str, to: str | None = None, mentions: list[str] | None = None) -> str | None:
+def send_message(
+    text: str, to: str | None = None, mentions: list[str] | None = None, pin_seconds: int = 0
+) -> str | None:
     """Post a text message through the sidecar. Raises on any transport or sidecar error.
 
-    Each mention ID needs a matching "@<id number>" in the text to tag that person.
+    Each mention ID needs a matching "@<id number>" in the text to tag that person. A pin that
+    fails is logged, since the message itself went out.
     """
     body = {"text": text, "mentions": mentions or []}
     if to:
         body["to"] = to
+    if pin_seconds:
+        body["pinSeconds"] = pin_seconds
     req = urllib.request.Request(
         f"{_sidecar_url()}/send-message",
         data=json.dumps(body).encode(),
@@ -115,7 +120,10 @@ def send_message(text: str, to: str | None = None, mentions: list[str] | None = 
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode()).get("id")
+        result = json.loads(resp.read().decode())
+    if pin_seconds and not result.get("pinned"):
+        log.warning(f"Sent but could not pin: {result.get('pinError', 'sidecar did not pin')}")
+    return result.get("id")
 
 
 def group_members() -> list[dict]:
