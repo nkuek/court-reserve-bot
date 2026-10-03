@@ -32,6 +32,7 @@ from dotenv import load_dotenv
 from discord.ext import tasks
 from constants import VALID_DURATIONS, MAX_DAYS_AHEAD, LOCAL_TZ
 from utils.poll_dispatcher import start_poll_dispatcher
+from utils.booker_prompt import PlayingButton, ask_booker
 from utils.user_store import (
     save_user_credentials,
     get_user_credentials,
@@ -606,6 +607,8 @@ async def on_ready():
         log.info(f"Synced {len(synced)} command(s)")
     except Exception as e:
         log.error(f"Failed to sync commands: {e}")
+
+    client.add_dynamic_items(PlayingButton)
 
     # Start the background scheduler
     if not check_schedules.is_running():
@@ -3343,6 +3346,8 @@ async def run_scheduled_script(cmd: list[str], task_name: str, discord_id: int, 
                 await user.send(embed=embed, view=view)
             except:
                 log.warning(f"Could not DM user {discord_id} with scheduled task result")
+            if process.returncode == 0:
+                await ask_booker(user, result_data)
 
             # Notify admin users with the log link
             await notify_admins_with_log(
@@ -3621,6 +3626,8 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
                 embed=embed,
                 view=view,
             )
+        if process.returncode == 0:
+            await ask_booker(interaction.user, result_data)
 
         # Notify admin users with the log link
         await notify_admins_with_log(

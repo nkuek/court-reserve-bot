@@ -1288,6 +1288,7 @@ def main(
             first = successes[0]
             result_json = {
                 "success": True,
+                "date": f"{booking_date:%Y-%m-%d}",
                 "court": first["court"],
                 "court_short": first["court_short"],
                 "elapsed_ms": first["elapsed_ms"],

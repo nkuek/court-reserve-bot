@@ -209,12 +209,17 @@ fly logs
 After a successful booking the bot lists the court in the pickleball sign-up app, with
 `SIGNUP_BOOKER_NAME` as the booker, who is signed up and placed on that court. At noon
 the following day it posts the app's sign-up post to the WhatsApp group: the date, the
-courts, who's already in, spots left, the sign-up link, and the passcode. The post is
-written at send time, so it's current. A second court booked for the same day joins the
+courts, spots left, the sign-up link, and the passcode, and pins it for 7 days. The post
+is written at send time, so it's current. A second court booked for the same day joins the
 same post. When noon the next day would land after sign-ups close (noon the day before
 the session), the post goes out right away.
 
 Polls queued before this change still send as Yes/No polls.
+
+After a booking, the bot DMs whoever booked: "Are you playing?" with "I'm playing" and
+"I can't play" buttons. The booker starts signed up. "I can't play" takes them off the
+sign-up list, and the court stays booked. The buttons keep working after a restart, so a
+change of plans is one tap.
 
 Once sign-ups close (noon the day before, after the app draws courts), the bot posts the
 final lineup to the group. If someone then withdraws, it posts a note for whoever moves up

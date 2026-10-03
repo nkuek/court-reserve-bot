@@ -76,3 +76,8 @@ def cancellations() -> list[dict]:
 
 def mark_cancelled(cancellation_id: int) -> None:
     _request("POST", f"/bot/cancellations/{cancellation_id}/done", {})
+
+
+def set_booker_playing(date: str, playing: bool) -> None:
+    """Signs the booker up for that day's session, or takes them off it."""
+    _request("POST", "/bot/booker", {"date": date, "name": os.environ["SIGNUP_BOOKER_NAME"], "playing": playing})
