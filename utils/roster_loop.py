@@ -88,8 +88,8 @@ def due_cancellations(pending: list[dict], state: dict, booker: str, now: float)
     return own, others
 
 
-async def _run(jobs: list[dict]) -> list[dict]:
-    fields = ("action", "date", "court", "players")
+async def run_jobs(jobs: list[dict]) -> list[dict]:
+    fields = ("action", "date", "court", "players", "to")
     payload = json.dumps([{k: j[k] for k in fields if k in j} for j in jobs]).encode()
     proc = await asyncio.create_subprocess_exec(
         sys.executable, str(SCRIPT),
@@ -193,7 +193,7 @@ async def sync_rosters():
         return
     log.info(f"CourtReserve updates: {', '.join(j['key'] for j in jobs)}")
     try:
-        results = await _run(jobs)
+        results = await run_jobs(jobs)
     except Exception as e:
         log.error(f"Roster sync run failed: {e}")
         results = [{"status": "error", "error": str(e)} for _ in jobs]

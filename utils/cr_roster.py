@@ -275,3 +275,30 @@ def cancel(page: Page, day: date, court: str, reason: str = "Cancel") -> dict:
     if find_reservation(page, day, court) == rid:
         raise RuntimeError(f"Still booked after cancelling: {result['status']} {result['body'][:300]}")
     return {"status": "cancelled", "reservation": rid}
+
+
+def transfer(page: Page, day: date, court: str, to_cr_name: str) -> dict:
+    """Swaps this account out of its reservation for another member, to hand the court over.
+
+    Returns whether the reservation still sits under this account afterwards.
+    """
+    rid = find_reservation(page, day, court)
+    if not rid:
+        return {"status": "not_found"}
+    current = current_players(page, rid)
+    me = next((p for p in current["players"] if p["member"] == current["self"]), None)
+    if not me:
+        return {"status": "already_out", "reservation": rid}
+    found, missing = resolve(page, rid, current["self"], [to_cr_name])
+    if missing:
+        return {"status": "unmatched", "reason": missing[to_cr_name]}
+    target = found[to_cr_name]
+    # The Sub form only offers members who aren't on the reservation yet.
+    if any(p["org"] == target["org"] for p in current["players"]):
+        edit(page, rid, [target["org"]], [])
+    swap(page, rid, me["org"], target["member"])
+    still_mine = find_reservation(page, day, court) == rid
+    after = current_players(page, rid) if still_mine else None
+    if after and not any(p["org"] == target["org"] for p in after["players"]):
+        raise RuntimeError(f"{to_cr_name} is not on the reservation after the swap")
+    return {"status": "transferred", "reservation": rid, "still_mine": still_mine}

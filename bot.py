@@ -32,7 +32,7 @@ from dotenv import load_dotenv
 from discord.ext import tasks
 from constants import VALID_DURATIONS, MAX_DAYS_AHEAD, LOCAL_TZ
 from utils.poll_dispatcher import start_poll_dispatcher
-from utils.booker_prompt import PlayingButton, ask_booker
+from utils.booker_prompt import CancelCourtButton, HandoffSelect, PlayingButton, ask_booker
 from utils.user_store import (
     save_user_credentials,
     get_user_credentials,
@@ -608,7 +608,7 @@ async def on_ready():
     except Exception as e:
         log.error(f"Failed to sync commands: {e}")
 
-    client.add_dynamic_items(PlayingButton)
+    client.add_dynamic_items(PlayingButton, HandoffSelect, CancelCourtButton)
 
     # Start the background scheduler
     if not check_schedules.is_running():

@@ -221,6 +221,14 @@ After a booking, the bot DMs whoever booked: "Are you playing?" with "I'm playin
 sign-up list, and the court stays booked. The buttons keep working after a restart, so a
 change of plans is one tap.
 
+"I can't play" also opens a menu: keep the court, cancel it, or hand it to one of that
+day's sign-ups from the app, waitlist last. Cancelling asks to confirm, cancels the
+reservation in CourtReserve with "Cancel" as the reason, and takes the court off the app.
+Handing off swaps the booker out of the reservation for the chosen player through Sub,
+after first taking them off it if roster sync already added them. If the reservation
+stays under the bot's account, the bot keeps managing it. If it moves to the new player's
+account, the app records them as the court's booker, and the bot leaves it to them.
+
 Once sign-ups close (noon the day before, after the app draws courts), the bot posts the
 final lineup to the group. If someone then withdraws, it posts a note for whoever moves up
 from the waitlist. Players the organizer has linked to a WhatsApp account in the app's Name

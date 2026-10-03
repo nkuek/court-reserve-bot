@@ -1,7 +1,8 @@
 """Copies sign-up app lineups onto CourtReserve reservations and cancels dropped courts.
 
 Reads a JSON list of jobs on stdin. A lineup job is {"date", "court", "players": [{"name", "crName"}]}.
-A cancel job is {"action": "cancel", "date", "court"}. Prints one result per job between the result
+A cancel job is {"action": "cancel", "date", "court"}. A transfer job is
+{"action": "transfer", "date", "court", "to": "<CourtReserve name>"}. Prints one result per job between the result
 markers. Logs in once for all of them.
 """
 
@@ -15,7 +16,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from constants import close_browser, get_page
-from utils.cr_roster import cancel, sync_court
+from utils.cr_roster import cancel, sync_court, transfer
 from utils.login import login
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -42,6 +43,8 @@ def main() -> None:
                 day = date.fromisoformat(job["date"])
                 if job.get("action") == "cancel":
                     result = cancel(page, day, job["court"])
+                elif job.get("action") == "transfer":
+                    result = transfer(page, day, job["court"], job["to"])
                 else:
                     result = sync_court(page, day, job["court"], job["players"], booker)
                 log.info(f"{label}: {result['status']} {json.dumps({k: v for k, v in result.items() if k != 'status'})}")
