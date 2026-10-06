@@ -136,11 +136,6 @@ def _record(state: dict, job: dict, result: dict, now: float) -> None:
     entry = state.setdefault(job["key"], {})
     fp = job["fingerprint"]
     label = f"Court {job['court']} on {job['date']}"
-    if result["status"] == "too_early":
-        # Players outside their booking window become addable at a known time. That's no failure.
-        entry.update(failed=fp, failed_at=now, retry_at=result["retry_at"] + 60)
-        log.info(f"{label}: players can't be added until {datetime.fromtimestamp(result['retry_at'], LOCAL_TZ):%a %-m/%-d %-I:%M %p}")
-        return
     if result["status"] == "error":
         entry.update(failed=fp, failed_at=now)
         entry.pop("retry_at", None)
@@ -152,10 +147,16 @@ def _record(state: dict, job: dict, result: dict, now: float) -> None:
                 success=False,
             )
         return
-    entry.pop("failed", None)
-    entry.pop("failed_at", None)
-    entry.pop("retry_at", None)
-    entry["synced"] = fp
+    if result.get("retry_at"):
+        # Players outside their booking window become addable at a known time. That's no failure.
+        entry.update(failed=fp, failed_at=now, retry_at=result["retry_at"] + 60)
+        for name, at in result.get("waiting", {}).items():
+            log.info(f"{label}: {name} can't be added until {datetime.fromtimestamp(at, LOCAL_TZ):%a %-m/%-d %-I:%M %p}")
+    else:
+        entry.pop("failed", None)
+        entry.pop("failed_at", None)
+        entry.pop("retry_at", None)
+        entry["synced"] = fp
     problems = []
     if result["status"] == "not_found":
         problems.append("No reservation for this court under the bot's account.")

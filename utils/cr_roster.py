@@ -32,11 +32,22 @@ IPHONE_UA = (
 )
 
 
-class TooEarly(RuntimeError):
+class Rejected(RuntimeError):
+    """CourtReserve refused a save. Its message usually names the player at fault."""
+
+    def __init__(self, kind: str, status: int, body: str):
+        super().__init__(f"{kind} rejected: {status} {body[:300]}")
+        try:
+            self.message = json.loads(body).get("message") or ""
+        except (ValueError, AttributeError):
+            self.message = ""
+
+
+class TooEarly(Rejected):
     """A player can't be added yet: the session is past their own advance-booking window."""
 
-    def __init__(self, message: str, limit: datetime):
-        super().__init__(message)
+    def __init__(self, kind: str, status: int, body: str, limit: datetime):
+        super().__init__(kind, status, body)
         self.limit = limit
 
 
@@ -50,8 +61,14 @@ def _check(kind: str, status: int, body: str) -> None:
     m = TOO_EARLY_RE.search(body)
     if m:
         limit = datetime.strptime(m.group(1), "%m/%d/%Y, %I:%M %p").replace(tzinfo=LOCAL_TZ)
-        raise TooEarly(json.loads(body).get("message", m.group(0)), limit)
-    raise RuntimeError(f"{kind} rejected: {status} {body[:300]}")
+        raise TooEarly(kind, status, body, limit)
+    raise Rejected(kind, status, body)
+
+
+def _blamed(message: str, names: list[str]) -> str | None:
+    """The player a rejection names, e.g. "Ying Zhuge not allowed on this reservation: ..."."""
+    hits = [n for n in names if n.lower() in message.lower()]
+    return max(hits, key=len) if hits else None
 
 
 def _ordinal(n: int) -> str:
@@ -244,35 +261,49 @@ def sync_court(page: Page, day: date, court: str, players: list[dict], booker: s
     unnamed = [p["name"] for p in players if not p["crName"]]
     found, missing = resolve(page, rid, current["self"], names)
     missing.update({n: "guest without a name" for n in unnamed})
-    remove, add = plan(current, list(found.values()), len(missing))
-
-    try:
-        if not remove and not add:
-            action = "unchanged"
-        elif len(remove) == 1 and len(add) == 1:
-            swap(page, rid, remove[0]["org"], add[0]["member"])
-            action = "swapped"
-        else:
-            edit(page, rid, [p["org"] for p in remove], [a["org"] for a in add])
-            action = "edited"
-    except TooEarly as e:
-        # The window slides with the clock, so the player becomes addable that far before the start.
-        start = datetime.strptime(current["start"], "%m/%d/%Y %I:%M %p").replace(tzinfo=LOCAL_TZ)
-        window = e.limit - datetime.now(LOCAL_TZ)
-        return {"status": "too_early", "reservation": rid, "retry_at": (start - window).timestamp(), "reason": str(e)}
+    # One ineligible player fails the whole save. Each rejection drops the player it names and saves again.
+    refused, waiting, retry_at = {}, {}, None
+    while True:
+        allowed = {n: m for n, m in found.items() if n not in refused and n not in waiting}
+        remove, add = plan(current, list(allowed.values()), len(missing) + len(refused) + len(waiting))
+        try:
+            if not remove and not add:
+                action = "unchanged"
+            elif len(remove) == 1 and len(add) == 1:
+                swap(page, rid, remove[0]["org"], add[0]["member"])
+                action = "swapped"
+            else:
+                edit(page, rid, [p["org"] for p in remove], [a["org"] for a in add])
+                action = "edited"
+            break
+        except Rejected as e:
+            name = _blamed(e.message, [n for n, m in allowed.items() if m in add])
+            if not name:
+                raise
+            log.warning(f"  Leaving {name} off: {e.message}")
+            if isinstance(e, TooEarly):
+                # The window slides with the clock, so the player becomes addable that far before the start.
+                start = datetime.strptime(current["start"], "%m/%d/%Y %I:%M %p").replace(tzinfo=LOCAL_TZ)
+                at = (start - (e.limit - datetime.now(LOCAL_TZ))).timestamp()
+                waiting[name] = at
+                retry_at = min(retry_at or at, at)
+            else:
+                refused[name] = e.message
 
     after = current_players(page, rid) if action != "unchanged" else current
     have = {p["org"] for p in after["players"]}
-    absent = [n for n, m in found.items() if m["org"] not in have]
+    absent = [n for n, m in allowed.items() if m["org"] not in have]
     if absent:
         raise RuntimeError(f"Still missing after {action}: {', '.join(absent)}")
     return {
         "status": action,
         "reservation": rid,
         "removed": [p["name"] for p in remove],
-        "added": [n for n, m in found.items() if m in add],
+        "added": [n for n, m in allowed.items() if m in add],
         "players": [p["name"] for p in after["players"]],
-        "unmatched": missing,
+        "unmatched": {**missing, **refused},
+        "waiting": waiting,
+        **({"retry_at": retry_at} if retry_at else {}),
     }
 
 
