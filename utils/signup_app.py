@@ -69,6 +69,11 @@ def rosters() -> list[dict]:
     return _request("GET", "/bot/rosters")["sessions"]
 
 
+def report_sync(date: str, court: str, status: str, problems: list[dict], error: str = "") -> None:
+    """Tells the app who missed a court's CourtReserve reservation, by their name in the app."""
+    _request("POST", "/bot/rosters/result", {"date": date, "court": court, "status": status, "problems": problems, "error": error})
+
+
 def cancellations() -> list[dict]:
     """Courts the app dropped for too few players that still need cancelling."""
     return _request("GET", "/bot/cancellations")["cancellations"]

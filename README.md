@@ -244,6 +244,7 @@ while the reservation needs them to reach four players. When CourtReserve reject
 the bot leaves that player off and saves the rest. Names map to members by
 exact search, and the bot's favorites break ties between members who share a name. Matches are
 cached in `data/cr_members.json`. Unmatched names and failures go to Discord once per lineup.
+Each sync also reports who missed the reservation to the sign-up app, which shows it on the lineup.
 The loop skips 19:40 to 20:15 so it never logs in during the 19:55 bookings.
 
 When sign-ups close, the app keeps only as many courts as its sign-ups fill at four players

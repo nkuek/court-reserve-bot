@@ -171,6 +171,16 @@ def _record(state: dict, job: dict, result: dict, now: float) -> None:
         )
 
 
+def _report(job: dict, result: dict) -> None:
+    """Shows the sync's outcome on the app's lineup, under each player's app name."""
+    app_name = {p["crName"].lower(): p["name"] for p in job["players"] if p["crName"]}
+    problems = [{**p, "name": app_name.get(p["name"].lower(), p["name"])} for p in result.get("problems", [])]
+    try:
+        signup_app.report_sync(job["date"], job["court"], result["status"], problems, result.get("error", "")[:300])
+    except Exception as e:
+        log.warning(f"Could not report Court {job['court']} on {job['date']} to the sign-up app: {e}")
+
+
 @tasks.loop(minutes=5)
 async def sync_rosters():
     if _quiet_now():
@@ -212,4 +222,5 @@ async def sync_rosters():
             await _record_cancel(state, job, result, now)
         else:
             _record(state, job, result, now)
+            await asyncio.to_thread(_report, job, result)
     _save_state(state)

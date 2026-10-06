@@ -22,6 +22,8 @@ SEARCH_URL = (
     "&isOpenReservation=false&organizationMemberIdsString=&userId={user}&filterValue={q}"
 )
 CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "cr_members.json"
+NOT_FOUND = "no CourtReserve member by that name"
+NO_NAME = "guest without a name"
 
 # CourtReserve rejects a doubles reservation with fewer players than this.
 MIN_PLAYERS = 4
@@ -170,7 +172,7 @@ def resolve(page: Page, rid: str, user: str, names: list[str]) -> tuple[dict, di
         elif hits:
             ambiguous[name] = hits
         else:
-            missing[name] = "no CourtReserve member by that name"
+            missing[name] = NOT_FOUND
     if ambiguous:
         favs = _favorites(rid)
         for name, hits in ambiguous.items():
@@ -259,7 +261,7 @@ def sync_court(page: Page, day: date, court: str, players: list[dict], booker: s
     names = [p["crName"] for p in players if p["name"].lower() != booker.lower() and p["crName"]]
     unnamed = [p["name"] for p in players if not p["crName"]]
     found, missing = resolve(page, rid, current["self"], names)
-    missing.update({n: "guest without a name" for n in unnamed})
+    missing.update({n: NO_NAME for n in unnamed})
     # One ineligible player fails the whole save. Each rejection drops the player it names and saves again.
     refused, waiting, retry_at = {}, {}, None
     while True:
@@ -302,6 +304,12 @@ def sync_court(page: Page, day: date, court: str, players: list[dict], booker: s
         "players": [p["name"] for p in after["players"]],
         "unmatched": {**missing, **refused},
         "waiting": waiting,
+        # Keyed by CourtReserve name, or the app name for an unnamed guest.
+        "problems": [
+            *({"name": n, "kind": {NOT_FOUND: "not_found", NO_NAME: "no_name"}.get(why, "ambiguous"), "detail": why} for n, why in missing.items()),
+            *({"name": n, "kind": "refused", "detail": why} for n, why in refused.items()),
+            *({"name": n, "kind": "waiting", "detail": "", "at": int(at * 1000)} for n, at in waiting.items()),
+        ],
         **({"retry_at": retry_at} if retry_at else {}),
     }
 
