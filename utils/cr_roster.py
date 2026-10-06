@@ -186,18 +186,17 @@ def resolve(page: Page, rid: str, user: str, names: list[str]) -> tuple[dict, di
     return found, missing
 
 
-def plan(current: dict, targets: list[dict], unresolved: int) -> tuple[list[dict], list[dict]]:
+def plan(current: dict, targets: list[dict]) -> tuple[list[dict], list[dict]]:
     """Players to remove and add so the reservation matches the targets.
 
-    Placeholders stay while they're needed for the player minimum or hold a spot for an
-    unmatched name.
+    Placeholders stay only while they're needed for the player minimum.
     """
     want = {t["org"] for t in targets}
     have = {p["org"] for p in current["players"]}
     add = [t for t in targets if t["org"] not in have]
     remove = [p for p in current["players"] if p["member"] != current["self"] and p["org"] not in want]
     after = len(current["players"]) - len(remove) + len(add)
-    keep = max(MIN_PLAYERS - after, 0) + unresolved
+    keep = max(MIN_PLAYERS - after, 0)
     for p in [p for p in remove if p["name"].lower().startswith("placeholder")][:keep]:
         remove.remove(p)
     return remove, add
@@ -265,7 +264,7 @@ def sync_court(page: Page, day: date, court: str, players: list[dict], booker: s
     refused, waiting, retry_at = {}, {}, None
     while True:
         allowed = {n: m for n, m in found.items() if n not in refused and n not in waiting}
-        remove, add = plan(current, list(allowed.values()), len(missing) + len(refused) + len(waiting))
+        remove, add = plan(current, list(allowed.values()))
         try:
             if not remove and not add:
                 action = "unchanged"
