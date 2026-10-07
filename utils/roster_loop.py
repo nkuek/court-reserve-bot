@@ -1,6 +1,6 @@
 """Keeps the bot's CourtReserve reservations in step with the sign-up app.
 
-Copies settled lineups onto the courts it booked and cancels courts the app dropped for too few players.
+Copies settled lineups onto the courts it booked and cancels courts the app dropped or removed.
 """
 
 import asyncio
@@ -84,7 +84,7 @@ def due_cancellations(pending: list[dict], state: dict, booker: str, now: float)
         key = f"cancel {c['id']}"
         if now - state.get(key, {}).get("failed_at", 0) < RETRY_AFTER_S:
             continue
-        own.append({"key": key, "id": c["id"], "action": "cancel", "date": c["date"], "court": c["court"]})
+        own.append({"key": key, "id": c["id"], "action": "cancel", "date": c["date"], "court": c["court"], "reason": c.get("reason", "short")})
     return own, others
 
 
@@ -110,15 +110,20 @@ async def run_jobs(jobs: list[dict]) -> list[dict]:
     return json.loads(text[start + len("===RESULT_JSON==="):end])
 
 
+def _why(reason: str) -> str:
+    return "It was removed in the sign-up app." if reason == "removed" else "Fewer than 4 signed up."
+
+
 async def _record_cancel(state: dict, job: dict, result: dict, now: float) -> None:
     entry = state.setdefault(job["key"], {})
     label = f"Court {job['court']} on {job['date']}"
+    why = _why(job.get("reason", "short"))
     if result["status"] == "error":
         entry["failed_at"] = now
         if not entry.get("alerted"):
             entry["alerted"] = True
             send_discord_notification(
-                f"**{label}:** too few players signed up, but cancelling it in CourtReserve failed.\n"
+                f"**{label}:** {why} Cancelling it in CourtReserve failed.\n"
                 f"{result.get('error', '')[:500]}\nThe bot retries every {RETRY_AFTER_S // 60} minutes. Cancel it by hand if it's urgent.",
                 title="Court Cancel Failed",
                 success=False,
@@ -131,7 +136,7 @@ async def _record_cancel(state: dict, job: dict, result: dict, now: float) -> No
         log.warning(f"Could not mark {label} cancelled in the sign-up app: {e}")
     state.pop(job["key"], None)
     if result["status"] == "cancelled":
-        send_discord_notification(f"**{label}:** cancelled in CourtReserve. Fewer than 4 signed up.", title="Court Cancelled")
+        send_discord_notification(f"**{label}:** cancelled in CourtReserve. {why}", title="Court Cancelled")
     else:
         log.info(f"{label} was already gone from CourtReserve")
 
@@ -207,7 +212,7 @@ async def sync_rosters():
     for c in others:
         # Another member's reservation sits on their account, so they cancel it.
         send_discord_notification(
-            f"**Court {c['court']} on {c['date']}:** dropped for too few players. {c['bookedBy']} booked it, so they need to cancel it in CourtReserve.",
+            f"**Court {c['court']} on {c['date']}:** {_why(c.get('reason', 'short'))} {c['bookedBy']} booked it, so they need to cancel it in CourtReserve.",
             title="Court Needs Cancelling",
             success=False,
         )
