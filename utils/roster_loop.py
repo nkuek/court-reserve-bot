@@ -124,7 +124,11 @@ async def _record_cancel(state: dict, job: dict, result: dict, now: float) -> No
                 success=False,
             )
         return
-    await asyncio.to_thread(signup_app.mark_cancelled, job["id"])
+    try:
+        await asyncio.to_thread(signup_app.mark_cancelled, job["id"])
+    except Exception as e:
+        # The reservation is already gone, so the next run finds nothing to cancel and marks it then.
+        log.warning(f"Could not mark {label} cancelled in the sign-up app: {e}")
     state.pop(job["key"], None)
     if result["status"] == "cancelled":
         send_discord_notification(f"**{label}:** cancelled in CourtReserve. Fewer than 4 signed up.", title="Court Cancelled")
@@ -207,7 +211,10 @@ async def sync_rosters():
             title="Court Needs Cancelling",
             success=False,
         )
-        await asyncio.to_thread(signup_app.mark_cancelled, c["id"])
+        try:
+            await asyncio.to_thread(signup_app.mark_cancelled, c["id"])
+        except Exception as e:
+            log.warning(f"Could not mark Court {c['court']} on {c['date']} handled in the sign-up app: {e}")
     jobs = cancels + due_jobs(sessions, state, booker, time.time())
     if not jobs:
         return

@@ -46,8 +46,8 @@ class PlayingButton(
     async def callback(self, interaction: discord.Interaction):
         playing = self.play == "in"
         try:
-            await asyncio.to_thread(signup_app.set_booker_playing, self.day, playing)
-            others = [] if playing else await asyncio.to_thread(_others, self.day)
+            await asyncio.to_thread(signup_app.set_booker_playing, self.day, playing, self.court)
+            others = [] if playing else await asyncio.to_thread(_others, self.day, self.court)
         except Exception as e:
             log.warning(f"Could not update the booker for {self.day}: {e}")
             await interaction.response.send_message(f"Couldn't update the sign-up app: {e}")
@@ -139,7 +139,7 @@ class CancelCourtButton(
 
     async def callback(self, interaction: discord.Interaction):
         if self.answer == "no":
-            others = await asyncio.to_thread(_others, self.day)
+            others = await asyncio.to_thread(_others, self.day, self.court)
             await interaction.response.edit_message(content=_out_text(self.day, self.court, others), view=prompt_view(self.day, self.court, others, menu=True))
             return
         when = f"court {self.court} on {_when(self.day)}"
@@ -189,9 +189,9 @@ async def _handoff_outcome(day: str, court: str, name: str, result: dict) -> str
     return f"Couldn't hand {when} to {name}: {result.get('error', 'unknown error')[:300]}. Use Sub in CourtReserve instead."
 
 
-def _others(day: str) -> list[dict]:
+def _others(day: str, court: str) -> list[dict]:
     booker = os.environ.get("SIGNUP_BOOKER_NAME", "").lower()
-    return [p for p in signup_app.players(day) if p["name"].lower() != booker]
+    return [p for p in signup_app.players(day, court) if p["name"].lower() != booker]
 
 
 def prompt_view(day: str, court: str, others: list[dict] | None = None, menu: bool = False) -> discord.ui.View:
@@ -207,7 +207,8 @@ async def ask_booker(user: discord.abc.User, result: dict | None) -> None:
     """DMs the person who booked, after a booking that listed the court in the app."""
     if not signup_app.is_configured() or not result or not result.get("success") or not result.get("date"):
         return
-    day, court = result["date"], result.get("court_short", "")
+    # Bubble B courts carry a "#" ("#7A"), which the custom id templates and the app's court names leave out.
+    day, court = result["date"], result.get("court_short", "").lstrip("#")
     if not court:
         return
     try:

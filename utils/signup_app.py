@@ -83,14 +83,17 @@ def mark_cancelled(cancellation_id: int) -> None:
     _request("POST", f"/bot/cancellations/{cancellation_id}/done", {})
 
 
-def set_booker_playing(date: str, playing: bool) -> None:
-    """Signs the booker up for that day's session, or takes them off it."""
-    _request("POST", "/bot/booker", {"date": date, "name": os.environ["SIGNUP_BOOKER_NAME"], "playing": playing})
+def set_booker_playing(date: str, playing: bool, court: str = "") -> None:
+    """Signs the booker up for the session holding their court that day, or takes them off it."""
+    _request("POST", "/bot/booker", {"date": date, "court": court, "name": os.environ["SIGNUP_BOOKER_NAME"], "playing": playing})
 
 
-def players(date: str) -> list[dict]:
-    """Everyone signed up for a day as {name, crName}, waitlist last."""
-    return _request("GET", "/bot/players?" + urllib.parse.urlencode({"date": date}))["players"]
+def players(date: str, court: str = "") -> list[dict]:
+    """Everyone signed up for the session holding that court as {name, crName}, waitlist last.
+
+    The court picks the session when the date has several.
+    """
+    return _request("GET", "/bot/players?" + urllib.parse.urlencode({"date": date, "court": court}))["players"]
 
 
 def hand_off_court(date: str, court: str, name: str) -> None:
