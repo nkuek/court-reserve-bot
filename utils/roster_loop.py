@@ -161,11 +161,13 @@ def _record(state: dict, job: dict, result: dict, now: float) -> None:
     if result["status"] == "not_found":
         problems.append("No reservation for this court under the bot's account.")
     problems += [f"{name}: {why}" for name, why in result.get("unmatched", {}).items()]
+    kept = result.get("kept", [])
     if problems and entry.get("alerted") != fp:
         entry["alerted"] = fp
+        held = f"\nLeft on the reservation until these are fixed: {', '.join(kept)}" if kept else ""
         send_discord_notification(
             f"**{label}:** added what it could. Fix these in CourtReserve or the app's Name list:\n"
-            + "\n".join(f"- {p}" for p in problems),
+            + "\n".join(f"- {p}" for p in problems) + held,
             title="Roster Sync Needs a Hand",
             success=False,
         )

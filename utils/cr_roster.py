@@ -188,20 +188,27 @@ def resolve(page: Page, rid: str, user: str, names: list[str]) -> tuple[dict, di
     return found, missing
 
 
-def plan(current: dict, targets: list[dict]) -> tuple[list[dict], list[dict]]:
+def plan(current: dict, targets: list[dict], hold: bool = False) -> tuple[list[dict], list[dict]]:
     """Players to remove and add so the reservation matches the targets.
 
-    Placeholders stay only while they're needed for the player minimum.
+    Placeholders stay only while they're needed for the player minimum. With `hold`, real players
+    stay too, since an unmatched lineup name may be one of them under another spelling.
     """
     want = {t["org"] for t in targets}
     have = {p["org"] for p in current["players"]}
     add = [t for t in targets if t["org"] not in have]
     remove = [p for p in current["players"] if p["member"] != current["self"] and p["org"] not in want]
+    if hold:
+        remove = [p for p in remove if _placeholder(p)]
     after = len(current["players"]) - len(remove) + len(add)
     keep = max(MIN_PLAYERS - after, 0)
-    for p in [p for p in remove if p["name"].lower().startswith("placeholder")][:keep]:
+    for p in [p for p in remove if _placeholder(p)][:keep]:
         remove.remove(p)
     return remove, add
+
+
+def _placeholder(p: dict) -> bool:
+    return p["name"].lower().startswith("placeholder")
 
 
 def swap(page: Page, rid: str, out_org: str, in_member: str) -> None:
@@ -266,7 +273,7 @@ def sync_court(page: Page, day: date, court: str, players: list[dict], booker: s
     refused, waiting, retry_at = {}, {}, None
     while True:
         allowed = {n: m for n, m in found.items() if n not in refused and n not in waiting}
-        remove, add = plan(current, list(allowed.values()))
+        remove, add = plan(current, list(allowed.values()), hold=bool(missing))
         try:
             if not remove and not add:
                 action = "unchanged"
@@ -293,6 +300,8 @@ def sync_court(page: Page, day: date, court: str, players: list[dict], booker: s
 
     after = current_players(page, rid) if action != "unchanged" else current
     have = {p["org"] for p in after["players"]}
+    want = {m["org"] for m in allowed.values()}
+    kept = [p["name"] for p in after["players"] if p["member"] != after["self"] and p["org"] not in want and not _placeholder(p)] if missing else []
     absent = [n for n, m in allowed.items() if m["org"] not in have]
     if absent:
         raise RuntimeError(f"Still missing after {action}: {', '.join(absent)}")
@@ -300,6 +309,7 @@ def sync_court(page: Page, day: date, court: str, players: list[dict], booker: s
         "status": action,
         "reservation": rid,
         "removed": [p["name"] for p in remove],
+        "kept": kept,
         "added": [n for n, m in allowed.items() if m in add],
         "players": [p["name"] for p in after["players"]],
         "unmatched": {**missing, **refused},
