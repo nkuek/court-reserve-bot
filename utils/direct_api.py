@@ -1,25 +1,26 @@
 """
 Direct API booking module for CourtReserve.
 
-Parses session tokens from the reservation form HTML, constructs the full
-POST payload (with hardcoded player data and static fields), then fires
+Reads session tokens from the app's CreateReservation GET, constructs the full
+JSON payload (with hardcoded player data and static fields), then fires
 direct HTTP POST requests to the CreateReservation API at click time.
-No form filling is needed -- only a single page load to get session tokens.
+No form filling is needed -- only one slot click to get session tokens.
 
 Uses separate httpx HTTP/2 clients per stagger offset so each request gets
 its own TCP+TLS connection, independently routed by Cloudflare's load
 balancer across multiple backend servers.
 """
 
+import json
 import logging
 import random
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Callable
-from urllib.parse import urlencode
 
 import httpx
 
@@ -45,8 +46,8 @@ COURT_IDS = {
     "Pickleball Court #8B (Bubble B)": 25665,
 }
 
-CREATE_RESERVATION_URL = "https://reservations.courtreserve.com/Online/ReservationsApi/CreateReservation/8449"
-BOOKINGS_PAGE_URL = "https://reservations.courtreserve.com/Online/Reservations/Bookings/8449?sId=32125"
+CREATE_RESERVATION_URL = "https://app.courtreserve.com/Online/ReservationsApi/CreateReservation/8449"
+BOOKINGS_PAGE_URL = "https://app.courtreserve.com/Online/Reservations/Bookings/8449?sId=32125"
 LATENCY_PROBE_OFFSETS_S = [-110, -75, -45, -15]
 
 # Hardcoded placeholder player data (same every booking)
@@ -87,42 +88,41 @@ PLACEHOLDER_PLAYERS = [
 ]
 
 
-def extract_booking_tokens(page) -> dict:
-    """
-    Extract session tokens from the reservation form by parsing hidden inputs.
+# Headers the web app sends on its own CreateReservation GET and POST. The API rejects a POST without them.
+AUTH_HEADERS = ("authorization", "requestdata", "x-requested-by", "reactsubmit", "uiculture")
 
-    The form does NOT need to be filled -- we only need the session-specific
-    tokens (CSRF, RequestData, LotteryGuid) and court-specific data (CourtId).
-    Everything else is hardcoded in build_reservation_payload().
+
+def extract_booking_tokens(response_json: dict, request_headers: dict) -> dict:
+    """
+    Read the session tokens out of the app's own CreateReservation GET.
+
+    The GET fires when a time slot is clicked. Its JSON body carries the reservation model, and its
+    request headers carry the bearer token the POST must repeat. The form does not need to be filled.
 
     Args:
-        page: Playwright page with the reservation form open (after clicking a time slot).
+        response_json: Parsed body of GET .../ReservationsApi/CreateReservation/<org>?isApiCall=true.
+        request_headers: Headers of that same request.
 
-    Returns a dict with the extracted hidden input values.
+    Returns the model fields, with the repeated headers under "_headers".
     """
-    log.info("Extracting session tokens from form HTML...")
+    log.info("Extracting session tokens from the reservation response...")
 
-    tokens = {}
-    inputs = page.query_selector_all("input[name]")
-    for inp in inputs:
-        name = inp.get_attribute("name")
-        value = inp.get_attribute("value") or ""
-        if name and name not in tokens:
-            tokens[name] = value
+    model = (response_json.get("Data") or {}).get("ReservationModel") or {}
+    tokens = dict(model)
+    tokens["_headers"] = {k: v for k, v in request_headers.items() if k.lower() in AUTH_HEADERS}
+    # Downstream code compares the captcha flag as a string.
+    tokens["IsCaptchaEnabledForPlayer"] = "True" if model.get("IsCaptchaEnabledForPlayer") else "False"
+    tokens["DisclosureText"] = model.get("DisclosureText") or ""
 
-    log.info(f"  Extracted {len(tokens)} hidden inputs")
-
-    # Log key fields
-    for key in ["CourtId", "MemberId", "RequestData", "ReservationTypeId",
-                 "ReservationLotteryGuid", "__RequestVerificationToken"]:
+    for key in ["CourtId", "MemberId", "RequestData", "ReservationTypeId", "MembershipId"]:
         val = tokens.get(key, "(missing)")
         if len(str(val)) > 50:
             val = str(val)[:50] + "..."
         log.info(f"  {key}: {val}")
+    log.info(f"  Repeated headers: {sorted(tokens['_headers'])}")
 
-    # Log CAPTCHA status — early warning if an account gets flagged
-    captcha_flag = tokens.get("IsCaptchaEnabledForPlayer", "(missing)")
-    log.info(f"  IsCaptchaEnabledForPlayer: {captcha_flag}")
+    # Log CAPTCHA status: early warning if an account gets flagged
+    log.info(f"  IsCaptchaEnabledForPlayer: {tokens['IsCaptchaEnabledForPlayer']}")
 
     return tokens
 
@@ -145,123 +145,99 @@ def build_reservation_payload(
     duration_minutes: int,
 ) -> dict:
     """
-    Build the complete POST payload for a reservation.
+    Build the JSON body the web app POSTs to CreateReservation.
 
-    Combines session tokens (from HTML), court-specific fields, user input
-    (date/time/duration), hardcoded player data, and static config fields.
+    Combines session tokens (from the CreateReservation GET), court-specific fields, user input
+    (date/time/duration), and the hardcoded placeholder players.
 
     Args:
-        session_tokens: Tokens from extract_booking_tokens() (CSRF, RequestData, etc.)
+        session_tokens: Tokens from extract_booking_tokens() (RequestData, member and type ids).
         court_name: Full court name (e.g., "Pickleball Court 6B (Bubble B)")
         court_id: Numeric court ID
         booking_date: The date to book
         start_time_str: Start time in HH:MM:SS format (e.g., "21:00:00")
         duration_minutes: Duration in minutes (60, 90, 120, 150, 180)
     """
-    date_str = booking_date.strftime("%-m/%-d/%Y 12:00:00 AM")
+    date_str = booking_date.strftime("%Y-%m-%d")
+    start = datetime.strptime(start_time_str[:5], "%H:%M")
+    # The app sends the clicked slot's end, not the booking's end. Duration carries the length.
+    slot_end = (start + timedelta(minutes=30)).strftime("%H:%M")
+    member_id = int(session_tokens.get("MemberId") or 8714012)
 
-    # Start with session-specific tokens from the form HTML
-    payload = {
-        "__RequestVerificationToken": session_tokens.get("__RequestVerificationToken", ""),
-        "RequestData": session_tokens.get("RequestData", ""),
-        "ReservationLotteryGuid": session_tokens.get("ReservationLotteryGuid", ""),
-    }
-
-    # Organization and member IDs (static)
-    payload.update({
-        "Id": "8449",
-        "OrgId": "8449",
-        "MemberId": session_tokens.get("MemberId", "8714012"),
-        "MemberIds": ",,",
-        "MembershipId": session_tokens.get("MembershipId", "207681"),
-        "CustomSchedulerId": "32125",
-        "ReservationTypeId": session_tokens.get("ReservationTypeId", "33608"),
-        "CourtTypeEnum": session_tokens.get("CourtTypeEnum", "3432"),
-    })
-
-    # Court-specific fields
-    payload.update({
-        "CourtId": str(court_id),
-        "SelectedCourtType": f"Indoor Pickleball - {court_name}",
-        "SelectedCourtTypeId": "0",
-    })
-
-    # Booking time fields
-    payload.update({
+    return {
+        "ReservationId": 0,
+        "OrgId": 8449,
+        "CustomSchedulerId": 32125,
+        "IsFromDynamicSlots": False,
+        "MemberId": member_id,
+        "RegisteringMemberId": member_id,
+        "ReservationTypeId": int(session_tokens.get("ReservationTypeId") or 33608),
+        "CreationType": 0,
+        "InstructorId": None,
         "Date": date_str,
-        "StartTime": start_time_str,
-        "Duration": str(duration_minutes),
-    })
-
-    # Disclosure (waiver agreement)
-    payload.update({
-        "DisclosureAgree": "true",
-        "DisclosureName": session_tokens.get("DisclosureName", "Montgomery TennisPlex Release and Indemnity"),
-        "DisclosureText": session_tokens.get("DisclosureText", ""),
-    })
-
-    # Primary member (SelectedMembers[0])
-    payload.update({
-        "SelectedMembers[0].OrgMemberId": session_tokens.get("SelectedMembers[0].OrgMemberId",
-                                                               session_tokens.get("MemberId", "8446585")),
-        "SelectedMembers[0].MemberId": session_tokens.get("MemberId", "8714012"),
-        "SelectedMembers[0].OrgMemberFamilyId": "",
-        "SelectedMembers[0].FirstName": session_tokens.get("SelectedMembers[0].FirstName", "Nick"),
-        "SelectedMembers[0].LastName": session_tokens.get("SelectedMembers[0].LastName", "Kuek"),
-        "SelectedMembers[0].Email": session_tokens.get("SelectedMembers[0].Email", "nkuek1@gmail.com"),
-        "SelectedMembers[0].MembershipNumber": session_tokens.get("SelectedMembers[0].MembershipNumber",
-                                                                    session_tokens.get("MemberId", "8446585")),
-        "SelectedMembers[0].PaidAmt": "",
-        "SelectedMembers[0].PriceToPay": "0",
-    })
-
-    # Placeholder players (SelectedMembers[1-3])
-    for i, player in enumerate(PLACEHOLDER_PLAYERS, start=1):
-        for field, value in player.items():
-            payload[f"SelectedMembers[{i}].{field}"] = value
-
-    # Static boolean/config fields
-    payload.update({
-        "IsConsolidatedScheduler": "False",
-        "HoldTimeForReservation": "15",
-        "RequirePaymentWhenBookingCourtsOnline": "True",
-        "AllowMemberToPickOtherMembersToPlayWith": "True",
-        "ReservableEntityName": "Court",
-        "IsAllowedToPickStartAndEndTime": "False",
-        "IsConsolidated": "False",
-        "IsToday": "False",
-        "IsFromDynamicSlots": "False",
-        "InstructorId": "",
-        "InstructorName": "",
-        "CanSelectCourt": "False",
-        "IsCourtRequired": "False",
-        "CostTypeAllowOpenMatches": "False",
-        "IsMultipleCourtRequired": "False",
-        "ReservationQueueId": "",
-        "ReservationQueueSlotId": "",
-        "IsMobileLayout": "False",
-        "IsCaptchaEnabledForPlayer": session_tokens.get("IsCaptchaEnabledForPlayer", "False"),
-        "IsResourceReservation": "False",
-        "Token": session_tokens.get("Token", ""),
-        "IsEligibleForPreauthorization": "False",
+        "SelectedDateString": date_str,
+        "StartTime": start.strftime("%H:%M"),
+        "EndTimeSpan": slot_end,
+        "Duration": duration_minutes,
+        "SelectedCourtType": f"Indoor Pickleball - {court_name}",
+        "SelectedCourtTypes": [],
+        "SelectedCourtTypesEdit": [],
+        "CourtId": court_id,
+        "CourtIds": [court_id],
+        "ResourceIds": [],
+        "Resources": [],
+        "IsResourceReservation": False,
+        "SelectedResourceId": None,
+        "SelectedResourceName": None,
+        "IsCourtRequiredByResource": False,
+        "IsConsolidated": False,
+        "IsConsolidatedScheduler": False,
+        "CourtTypeEnum": int(session_tokens.get("CourtTypeEnum") or 3432),
+        "SelectedCourtTypeId": 0,
+        "MemberIds": ",".join(p["MemberId"] for p in PLACEHOLDER_PLAYERS),
+        "SelectedMembers": [
+            {
+                "MemberId": int(p["MemberId"]),
+                "OrgMemberId": int(p["OrgMemberId"]),
+                "FirstName": "",
+                "LastName": "",
+            }
+            for p in PLACEHOLDER_PLAYERS
+        ],
+        "ReservationGuests": [],
+        "FeeResponsibility": None,
+        "IsOpenReservation": None,
+        "LookingForOponents": False,
+        "NotesForOpponents": None,
+        "MatchTypeId": None,
+        "SportTypeId": None,
+        "MatchMakerTypeId": None,
+        "MatchMakerGender": None,
+        "MatchMakerMinAge": None,
+        "MatchMakerMaxAge": None,
+        "MatchMakerMinNumberOfPlayers": None,
+        "MatchMakerMaxNumberOfPlayers": None,
+        "MatchMakerSelectedRatingIds": [],
         "MatchMakerSelectedRatingIdsString": "",
-        "DurationType": "",
-        "MaxAllowedCourtsPerReservation": "1",
-        "SelectedResourceId": "",
-        "SelectedResourceName": "",
-        "UseMinTimeByDefault": "False",
-        "IsOpenReservation": "false",
-        "MatchMakerTypeId": "",
-        "MatchMakerMinNumberOfPlayers": "2",
-        "MatchMakerMaxNumberOfPlayers": "",
-        "Description": "",
-        "SelectedNumberOfGuests": "",
-        "OwnersDropdown_input": "",
-        "OwnersDropdown": "",
-        "X-Requested-With": "XMLHttpRequest",
-    })
-
-    return payload
+        "MatchMakerRatingCategoryId": None,
+        "MatchMakerMemberGroupIds": [],
+        "MatchMakerIsPrivateMatch": False,
+        "MatchMakerJoinCode": None,
+        "Description": None,
+        "Udfs": [],
+        "ReservationMiscFees": [],
+        "RecordingEnabled": False,
+        "RecordingProvider": None,
+        "RecordingType": None,
+        "RecordingQuotedPrice": None,
+        "DisclosureAgree": True,
+        "Token": session_tokens.get("Token"),
+        "ReservationLotteryGuid": f"{uuid.uuid4()}_8449_{member_id}",
+        "Platform": "Web",
+        "RequestData": session_tokens.get("RequestData", ""),
+        "IsMobileLayout": False,
+        "IsApiCall": False,
+    }
 
 
 def fire_parallel_bookings(
@@ -324,7 +300,7 @@ def fire_parallel_bookings(
                 start_time_str=start_time_str,
                 duration_minutes=duration_minutes,
             )
-            encoded = urlencode(payload, doseq=True).encode()
+            encoded = json.dumps(payload).encode()
             court_short = court_name.split()[2] if len(court_name.split()) > 2 else court_name
             payloads.append((court_name, court_short, court_id, encoded))
         return payloads
@@ -415,14 +391,16 @@ def fire_parallel_bookings(
 
     # XHR headers sent only on POST requests (not warmup GETs)
     post_headers = {
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        **base_tokens.get("_headers", {}),
+        "Content-Type": "application/json",
+        "Accept": "application/json",
         "X-Requested-With": "XMLHttpRequest",
         "Origin": "https://app.courtreserve.com",
-        "Referer": "https://app.courtreserve.com/",
+        "Referer": BOOKINGS_PAGE_URL,
     }
     warmup_headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": "https://reservations.courtreserve.com/",
+        "Referer": "https://app.courtreserve.com/",
     }
 
     # One warmed HTTP/2 client per offset/client repeat. keepalive_expiry=120
@@ -651,7 +629,7 @@ def fire_parallel_bookings(
             start = time.time()
             try:
                 resp = client.post(
-                    f"{CREATE_RESERVATION_URL}?uiCulture=en-US",
+                    CREATE_RESERVATION_URL,
                     content=encoded_payload,
                     headers=post_headers,
                 )

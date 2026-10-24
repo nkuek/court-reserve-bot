@@ -123,6 +123,18 @@ def to_12_hour(time_str: str | datetime) -> str:
     return dt.strftime("%-I:%M %p")  # e.g., "9:00 PM"
 
 
+def _is_create_get(resp) -> bool:
+    return resp.request.method == "GET" and "/ReservationsApi/CreateReservation/" in resp.url
+
+
+def close_reservation_modal(page):
+    """Close the Create Reservation modal if it is open."""
+    close_btn = page.locator('[data-testid="reservation-create-page"]').get_by_role("button", name="Close")
+    if close_btn.count() > 0:
+        close_btn.first.click()
+        page.locator('[data-testid="reservation-create-page"]').wait_for(state="detached", timeout=5000)
+
+
 def add_players():
     """Add 3 placeholder players to the reservation."""
     log.info("Adding placeholder players...")
@@ -1089,52 +1101,34 @@ def main(
                 log.info(f"  {court_short}: ID {known_id} (cached)")
                 continue
 
-            # Open the reservation form for this court (click its time slot)
+            # Open the reservation form for this court (click its time slot). The app's own
+            # CreateReservation GET carries the tokens, so capture it during the click.
             log.info(f"  Opening form for {court_short}...")
             try:
-                check_court_availability(court_name, reservation_time, end_time)
+                with page.expect_response(_is_create_get, timeout=15000) as form_resp:
+                    check_court_availability(court_name, reservation_time, end_time)
             except Exception as err:
                 log.warning(f"  {court_short}: skipped ({err})")
+                close_reservation_modal(page)
                 continue
 
-            # Wait for form to fully load (CourtId appears first, but other
-            # inputs render via AJAX shortly after — wait for a minimum count
-            # to avoid extracting 0 inputs from a partially-rendered form)
-            try:
-                page.wait_for_selector("input[name='CourtId']", state="attached", timeout=5000)
-                # Wait for the form to stabilize — need at least the CSRF token + key fields
-                page.wait_for_function(
-                    "() => document.querySelectorAll('input[name]').length >= 10",
-                    timeout=5000,
-                )
-            except Exception:
-                log.warning(f"  {court_short}: form inputs did not load within 5s")
-                # Close any partially-opened form before trying next court
-                close_btn = page.locator('button[data-testid="Close"]')
-                if close_btn.count() > 0:
-                    close_btn.click()
-                    page.wait_for_timeout(300)
-                continue
-            tokens = extract_booking_tokens(page)
-            court_id = int(tokens.get("CourtId", 0))
+            tokens = extract_booking_tokens(
+                form_resp.value.json(), form_resp.value.request.all_headers()
+            )
+            close_reservation_modal(page)
+            court_id = int(tokens.get("CourtId") or 0)
 
             if court_id:
                 courts_with_ids.append((court_name, court_id))
                 log.info(f"  {court_short}: ID {court_id}")
 
-            if session_tokens is None and tokens.get("__RequestVerificationToken"):
+            if session_tokens is None and tokens.get("_headers", {}).get("authorization"):
                 session_tokens = tokens
                 log.info(f"  Session tokens captured from {court_short}")
 
-            # Close the form
-            close_btn = page.locator('button[data-testid="Close"]')
-            if close_btn.count() > 0:
-                close_btn.click()
-                page.wait_for_timeout(300)
-
-        if not session_tokens or not session_tokens.get("__RequestVerificationToken"):
-            log.error("Failed to extract CSRF token from any court form")
-            notify_failure("Direct API: missing CSRF token")
+        if not session_tokens:
+            log.error("Failed to extract an auth token from any court form")
+            notify_failure("Direct API: missing auth token")
             raise typer.Exit(1)
 
         if not courts_with_ids:
@@ -1188,9 +1182,7 @@ def main(
                     )
                     log.info(f"  CAPTCHA solved (token: {token[:40]}...)")
                     # Close form and browser
-                    close_btn = page.locator('button[data-testid="Close"]')
-                    if close_btn.count() > 0:
-                        close_btn.click()
+                    close_reservation_modal(page)
                     close_browser()
                     return token
                 except Exception as e:
