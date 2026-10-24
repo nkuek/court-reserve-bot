@@ -123,16 +123,29 @@ def to_12_hour(time_str: str | datetime) -> str:
     return dt.strftime("%-I:%M %p")  # e.g., "9:00 PM"
 
 
+CREATE_MODAL = '[data-testid="reservation-create-page"]'
+# The Close and Confirm buttons sit in this footer, outside the CREATE_MODAL element.
+MODAL_FOOTER = '[data-testid="reservation-mobile-footer"]'
+
+# The error toast text the app shows when a save fails, such as "Something wrong, please try again (HCU00)".
+ERROR_TOAST = re.compile(r"something wrong|please try again", re.I)
+
+
+def confirm_button(page):
+    """The modal's Confirm button, which saves the reservation."""
+    return page.locator(MODAL_FOOTER).get_by_role("button", name="Confirm")
+
+
 def _is_create_get(resp) -> bool:
     return resp.request.method == "GET" and "/ReservationsApi/CreateReservation/" in resp.url
 
 
 def close_reservation_modal(page):
     """Close the Create Reservation modal if it is open."""
-    close_btn = page.locator('[data-testid="reservation-create-page"]').get_by_role("button", name="Close")
+    close_btn = page.locator(MODAL_FOOTER).get_by_role("button", name="Close")
     if close_btn.count() > 0:
         close_btn.first.click()
-        page.locator('[data-testid="reservation-create-page"]').wait_for(state="detached", timeout=5000)
+        page.locator(CREATE_MODAL).wait_for(state="detached", timeout=5000)
 
 
 def add_players():
@@ -140,21 +153,21 @@ def add_players():
     log.info("Adding placeholder players...")
     page = get_page()
 
+    search = page.get_by_placeholder("Search for other player(s) to play with")
+    option = page.locator('[data-testid^="reservation-additional-player-option-"]')
     for i in range(3):
-        additional_players_input = page.locator("[name='OwnersDropdown_input']")
-        additional_players_input.wait_for(timeout=10000)
-        additional_players_input.fill("Placeholder")
-
-        # Wait for dropdown results to appear (much faster than fixed 5s wait)
-        page.locator("#OwnersDropdown_listbox li").first.wait_for(timeout=10000)
-        # Small delay for the UI to be ready for input
-        page.wait_for_timeout(300)
-
-        additional_players_input.press("Enter")
-
-        # Wait for the player to be added (tag appears in the form)
-        # This replaces the old 5-second wait with a condition-based wait
-        page.wait_for_timeout(200)  # Brief delay for form state update
+        search.wait_for(timeout=10000)
+        search.fill("Placeholder")
+        # Players already added drop out of the results, so the first option is always a new one.
+        option.first.wait_for(timeout=10000)
+        option.first.click()
+        # The row count confirms the add before the next search.
+        expect_rows = i + 2
+        page.wait_for_function(
+            "n => document.querySelectorAll('[data-testid^=\"reservation-player-row-\"]').length >= n",
+            arg=expect_rows,
+            timeout=5000,
+        )
         log.info(f"  Added placeholder {i + 1}/3")
 
     log.info("Successfully added all placeholders")
@@ -164,7 +177,7 @@ def click_disclosure():
     """Click the disclosure agreement checkbox."""
     log.info("Clicking disclosure checkbox...")
     page = get_page()
-    disclosure_label = page.locator("label[for='DisclosureAgree']")
+    disclosure_label = page.get_by_text("I agree to the terms above")
     disclosure_label.wait_for(timeout=3000)
     disclosure_label.click()
     log.info("Disclosure accepted")
@@ -198,16 +211,16 @@ def add_duration(duration_hours: float) -> float:
     if not target_text:
         raise ValueError(f"Unknown duration: {duration_hours}. Valid options: {list(duration_text_map.keys())}")
 
-    duration_input = page.locator("span[aria-owns='Duration_listbox']")
+    # The duration select is the first button in the date/time controls.
+    duration_input = page.locator('[data-testid="reservation-section-date-time-controls"] button').first
     duration_input.wait_for(timeout=3000)
     duration_input.click()
 
-    # Wait for dropdown to open
-    dropdown_list = page.locator('ul[data-testid="Duration-container"][aria-hidden="false"]')
+    dropdown_list = page.get_by_role("listbox")
     dropdown_list.wait_for(timeout=2000)
 
-    # Try to find the requested duration
-    duration_item = dropdown_list.locator(f"li:has-text('{target_text}')")
+    # Exact match: "1 hour" must not pick "1 hour & 30 minutes".
+    duration_item = dropdown_list.get_by_role("option", name=target_text, exact=True)
     actual_duration = duration_hours
 
     # Check if the requested option exists
@@ -218,7 +231,7 @@ def add_duration(duration_hours: float) -> float:
 
         for fallback_duration in fallbacks:
             fallback_text = duration_text_map[fallback_duration]
-            fallback_item = dropdown_list.locator(f"li:has-text('{fallback_text}')")
+            fallback_item = dropdown_list.get_by_role("option", name=fallback_text, exact=True)
 
             if fallback_item.count() > 0:
                 log.warning(f"⚠️ {target_text} not available for this time slot!")
@@ -296,7 +309,7 @@ def click_save_button(target_time: datetime) -> bool:
     """
     page = get_page()
     log.info("Preparing to click Save button...")
-    save_button = page.locator('button[data-testid="Save"]')
+    save_button = confirm_button(page)
     save_button.wait_for(timeout=10000)
 
     delay = (target_time - datetime.now()).total_seconds()
@@ -357,11 +370,10 @@ def click_save_button(target_time: datetime) -> bool:
 
     # Wait for the booking result - either modal closes (success) or error alert appears
     log.info("Waiting for booking result...")
-    error_alert = page.locator('.swal2-modal')
-    # Check for the booking form title - if it's gone, modal closed (success)
-    booking_form_title = page.locator('span[data-testid="title"]:has-text("Book a reservation")')
-    # Also use data-testid for the save button since text changes during loading
-    save_btn = page.locator('button[data-testid="Save"], button[data-testid="save-btn"]')
+    error_alert = page.get_by_text(ERROR_TOAST)
+    # If the modal is gone, the reservation saved
+    booking_form_title = page.locator(CREATE_MODAL)
+    save_btn = confirm_button(page)
 
     # Poll for up to 30 seconds for a definitive result (reduced from 60s)
     max_wait_seconds = 30
@@ -620,7 +632,7 @@ def _parallel_book_court(
 def _click_save_at_time(click_time: datetime) -> bool:
     """Click the save button at a specific time (for staggered parallel attempts)."""
     page = get_page()
-    save_button = page.locator('button[data-testid="Save"]')
+    save_button = confirm_button(page)
     save_button.wait_for(timeout=10000)
 
     # Wait until click time
@@ -642,8 +654,8 @@ def _click_save_at_time(click_time: datetime) -> bool:
     log.info(f"CLICKED at {actual_click.strftime('%H:%M:%S.%f')[:-3]} (diff: {diff_ms:+.1f}ms)")
 
     # Wait for result (same logic as click_save_button)
-    error_alert = page.locator('.swal2-modal')
-    booking_form_title = page.locator('span[data-testid="title"]:has-text("Book a reservation")')
+    error_alert = page.get_by_text(ERROR_TOAST)
+    booking_form_title = page.locator(CREATE_MODAL)
 
     max_wait_seconds = 30
     poll_interval_ms = 150  # Faster polling
@@ -1378,7 +1390,7 @@ def main(
             booking_succeeded = click_save_button(target)
 
             # Check for SweetAlert (error modal) - may have appeared during wait
-            alerts = page.query_selector_all(".swal2-modal")
+            alerts = page.get_by_text(ERROR_TOAST).count() > 0
 
             if alerts or not booking_succeeded:
                 log.warning(
@@ -1389,15 +1401,8 @@ def main(
                 # Save debug snapshot of the error state
                 _save_debug_snapshot(f"error_alert_{court_name.replace(' ', '_')}")
 
-                if alerts:
-                    # Click the confirm button on the SweetAlert
-                    confirm_button = page.locator("button.swal2-confirm")
-                    if confirm_button.count() > 0:
-                        confirm_button.click()
-
-                    close_button = page.locator('button[data-testid="Close"]')
-                    if close_button.count() > 0:
-                        close_button.click()
+                # The error toast leaves the modal open. Close it before the next court.
+                close_reservation_modal(page)
 
                 # Continue to next court (DO NOT break)
                 continue
