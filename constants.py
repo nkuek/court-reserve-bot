@@ -1,4 +1,5 @@
 import os
+import re
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,9 @@ SCHEDULE_ID = "32125"
 
 # Open slots render this button. Reserved blocks and the waitlist column do not.
 SLOT_BUTTON = '[data-testid="reserve-slot-btn"]'
+
+# The error toast the app shows when a save fails, such as "Something wrong, please try again (HCU00)".
+ERROR_TOAST = re.compile(r"something wrong|please try again", re.I)
 
 # Valid duration options for bookings (in hours)
 VALID_DURATIONS = [1.0, 1.5, 2.0, 2.5, 3.0]

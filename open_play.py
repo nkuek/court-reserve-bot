@@ -19,10 +19,11 @@ from typing import Annotated
 import typer
 from dotenv import load_dotenv
 
-from constants import get_page, close_browser
+from constants import get_page, close_browser, SLOT_BUTTON, ERROR_TOAST
 from utils.login import login
 from utils.booking_date import select_booking_date, parse_booking_date
 from utils.discord import notify_open_play_success, notify_failure, notify_start
+from utils.scheduler import reveal
 from utils.wait import wait_until, parse_wait_time
 
 
@@ -98,71 +99,25 @@ def _wait_for_registration_result(page, max_wait_seconds: int = 60) -> bool:
     Returns:
         True if registration appears successful, False otherwise.
     """
-    error_alert = page.locator('.swal2-modal')
-    # Use data-testid since button text changes during loading
-    save_button = page.locator('button[data-testid="save-btn"]')
-    spinner = page.locator('button[data-testid="save-btn"] .btn-active-spinner')
-    # Check for "Register to Program" heading which indicates we're still on the form
-    register_heading = page.locator('text="Register to Program"')
+    error_alert = page.get_by_text(ERROR_TOAST)
 
     poll_interval_ms = 500
     start_time = time.time()
 
     while time.time() - start_time < max_wait_seconds:
-        # Check if error alert appeared
         if error_alert.count() > 0:
             log.warning("Error alert detected - registration failed")
             return False
 
-        # Check if we navigated away from the registration page (success)
-        # If the "Register to Program" heading is gone, we likely succeeded
-        try:
-            if register_heading.count() == 0 or not register_heading.is_visible():
-                log.info("Navigated away from registration page - registration successful")
-                return True
-        except Exception:
-            # Element detached = page navigated
-            log.info("Page navigated - registration appears successful")
+        # The registration form lives at /Events/SignUpToEvent. The app leaves it once the sign-up saves.
+        if "SignUpToEvent" not in page.url:
+            log.info("Navigated away from registration page - registration successful")
             return True
-
-        # Check if button still has spinner (still loading)
-        try:
-            button_exists = save_button.count() > 0 and save_button.is_visible()
-            button_disabled = button_exists and save_button.is_disabled()
-
-            if button_exists and not button_disabled:
-                # Button is enabled again - submission completed, check result
-                page.wait_for_timeout(500)
-                if error_alert.count() > 0:
-                    log.warning("Error alert appeared after submission")
-                    return False
-                if register_heading.count() == 0 or not register_heading.is_visible():
-                    log.info("Form submitted and page navigated - registration successful")
-                    return True
-                # Still on form but button enabled - might have failed silently
-                log.warning("Button re-enabled but still on registration page")
-        except Exception:
-            pass
 
         page.wait_for_timeout(poll_interval_ms)
 
-    # Timeout - couldn't determine result
     log.warning(f"Timeout after {max_wait_seconds}s waiting for registration result")
-
-    # Final check
-    if error_alert.count() > 0:
-        return False
-
-    # If we're no longer on the registration page, consider it success
-    try:
-        if register_heading.count() == 0 or not register_heading.is_visible():
-            return True
-    except Exception:
-        return True
-
-    # Still on registration page after timeout = likely failed
-    log.warning("Still on registration page after timeout - assuming failure")
-    return False
+    return error_alert.count() == 0 and "SignUpToEvent" not in page.url
 
 
 def _wait_and_click(element, target_time: datetime, action_name: str = "click"):
@@ -371,19 +326,18 @@ def _run_once(
     # Find any Pickleball Open Play event on this date
     try:
         # First, find the event name element to log what we found
-        event_name_locator = page.locator(
-            "span[data-testid='reservation-name']:has-text('Pickleball Open Play')"
+        page.wait_for_selector(SLOT_BUTTON, timeout=10000)
+        # Event cards are rendered only near the scroll position, so scroll until one appears.
+        event_card = page.locator("[data-reservationid]").filter(
+            has=page.locator("[data-testid='reservation-name']", has_text="Pickleball Open Play")
         )
-        event_name_locator.first.wait_for(timeout=10000)
-        event_name = (event_name_locator.first.text_content() or "").strip()
+        if not reveal(page, event_card):
+            raise TimeoutError("no Pickleball Open Play card at any scroll position")
+        event_name = (event_card.first.locator("[data-testid='reservation-name']").text_content() or "").strip()
         log.info(f"  Found event: {event_name}")
 
-        # Now find the Details link for this event
-        details_link = page.locator(
-            "span[data-testid='reservation-name']:has-text('Pickleball Open Play')"
-        ).locator("xpath=ancestor::div[contains(@class,'reservation-container')]").locator(
-            "a[data-testid='event-btn-detail']:has-text('Details')"
-        ).first
+        # The card's Details label opens the event page.
+        details_link = event_card.first.get_by_text("Details", exact=True)
         details_link.wait_for(timeout=10000)
     except Exception as e:
         _save_debug_snapshot("event_not_found")
@@ -423,7 +377,7 @@ def _run_once(
 
     log.info("Clicking Register link...")
     try:
-        register_link = page.locator("a:has-text('Register')").first
+        register_link = page.get_by_role("button", name="Register", exact=True)
         register_link.wait_for(timeout=10000)
     except Exception as e:
         _save_debug_snapshot("register_link_not_found")
@@ -438,7 +392,7 @@ def _run_once(
 
     log.info("Finalizing registration...")
     try:
-        finalize_button = page.locator("button:has-text('Finalize Registration')")
+        finalize_button = page.get_by_role("button", name="Finalize Registration")
         finalize_button.wait_for(timeout=10000)
     except Exception as e:
         _save_debug_snapshot("finalize_button_not_found")
@@ -448,24 +402,13 @@ def _run_once(
             f"  Original error: {e}"
         )
 
-    # Check disclosure checkbox if present (required before finalizing)
-    # Use JavaScript to check it — Kendo UI's kendoCheckBox widget can make
-    # the raw <input> fail Playwright's is_visible() check, so force=True
-    # or JS is needed.
-    disclosure_checked = page.evaluate("""() => {
-        const cb = document.getElementById('DisclosureAgree');
-        if (!cb) return 'not_found';
-        if (cb.checked) return 'already_checked';
-        cb.checked = true;
-        cb.dispatchEvent(new Event('change', { bubbles: true }));
-        return 'checked';
-    }""")
-    if disclosure_checked == 'checked':
-        log.info("  Checked disclosure agreement checkbox")
-    elif disclosure_checked == 'already_checked':
-        log.info("  Disclosure checkbox already checked")
+    # The disclosure is a switch. The Finalize button stays disabled until it is on.
+    disclosure_switch = page.get_by_role("switch")
+    if disclosure_switch.count() > 0 and disclosure_switch.first.get_attribute("aria-checked") != "true":
+        disclosure_switch.first.click()
+        log.info("  Checked disclosure agreement")
     else:
-        log.info("  No disclosure checkbox found")
+        log.info("  No disclosure switch to turn on")
 
     finalize_button.click()
 

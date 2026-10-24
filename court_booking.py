@@ -24,7 +24,7 @@ import typer
 from dotenv import load_dotenv
 
 from constants import (
-    SLOT_BUTTON,
+    SLOT_BUTTON, ERROR_TOAST,
     get_page, get_context, close_browser, COURTS, VALID_DURATIONS,
     FACILITY_CLOSING_HOUR, FACILITY_CLOSING_MINUTE, set_trace_label,
     BASE_URL, ORG_ID, SCHEDULE_ID, RESERVATIONS_URL,
@@ -126,9 +126,6 @@ def to_12_hour(time_str: str | datetime) -> str:
 CREATE_MODAL = '[data-testid="reservation-create-page"]'
 # The Close and Confirm buttons sit in this footer, outside the CREATE_MODAL element.
 MODAL_FOOTER = '[data-testid="reservation-mobile-footer"]'
-
-# The error toast text the app shows when a save fails, such as "Something wrong, please try again (HCU00)".
-ERROR_TOAST = re.compile(r"something wrong|please try again", re.I)
 
 
 def confirm_button(page):
