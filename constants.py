@@ -18,6 +18,9 @@ LOCAL_TZ = ZoneInfo("America/New_York")
 ORG_ID = "8449"
 SCHEDULE_ID = "32125"
 
+# Open slots render this button. Reserved blocks and the waitlist column do not.
+SLOT_BUTTON = '[data-testid="reserve-slot-btn"]'
+
 # Valid duration options for bookings (in hours)
 VALID_DURATIONS = [1.0, 1.5, 2.0, 2.5, 3.0]
 

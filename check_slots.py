@@ -20,9 +20,10 @@ from typing import Annotated
 import typer
 from dotenv import load_dotenv
 
-from constants import get_page, close_browser
+from constants import get_page, close_browser, SLOT_BUTTON
 from utils.login import login
 from utils.booking_date import select_booking_date, parse_booking_date
+from utils.scheduler import collect_open_slots
 
 
 # Load .env from the same directory as this script
@@ -38,8 +39,6 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 app = typer.Typer(help="Check available court slots on CourtReserve.")
-
-SLOT_BUTTON = '[data-testid="reserve-slot-btn"]'
 
 
 
@@ -63,25 +62,9 @@ def get_available_slots() -> dict[str, list[str]]:
         log.warning(f"  Scheduler load timeout: {e}")
         page.wait_for_timeout(1000)
 
-    # The scheduler body is the nearest scrolling ancestor of a slot. Scroll it in a few
-    # passes in case the grid renders rows lazily.
-    try:
-        for frac in (0.0, 0.5, 1.0):
-            page.evaluate(
-                """(args) => {
-                    let n = document.querySelector(args.sel);
-                    while (n && !(n.scrollHeight > n.clientHeight && /auto|scroll/.test(getComputedStyle(n).overflowY))) n = n.parentElement;
-                    if (n) n.scrollTop = n.scrollHeight * args.frac;
-                }""",
-                {"sel": SLOT_BUTTON, "frac": frac},
-            )
-            page.wait_for_timeout(200)
-    except Exception as e:
-        log.debug(f"  Scheduler scroll skipped: {e}")
-
-    # Only open slots render a reserve button. Reserved blocks and the waitlist column do not.
-    slot_buttons = page.query_selector_all(SLOT_BUTTON)
-    log.info(f"Found {len(slot_buttons)} available slot buttons")
+    # The grid renders only the rows near its scroll position, so read it while scrolling.
+    open_slots = collect_open_slots(page)
+    log.info(f"Found {len(open_slots)} available slots")
 
     # Group by court
     slots_by_court: dict[str, list[str]] = defaultdict(list)
@@ -89,10 +72,8 @@ def get_available_slots() -> dict[str, list[str]]:
     skipped_count = 0
 
     log.info("Parsing slot buttons...")
-    for button in slot_buttons:
+    for (court, _start), time_text in open_slots.items():
         try:
-            court = button.get_attribute("data-court-label")
-            time_text = (button.text_content() or "").strip()
 
             if court and time_text:
                 # Extract time from button text (e.g., "Reserve2:00PM" -> "2:00 PM")

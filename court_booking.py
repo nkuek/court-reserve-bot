@@ -24,11 +24,13 @@ import typer
 from dotenv import load_dotenv
 
 from constants import (
+    SLOT_BUTTON,
     get_page, get_context, close_browser, COURTS, VALID_DURATIONS,
     FACILITY_CLOSING_HOUR, FACILITY_CLOSING_MINUTE, set_trace_label,
     BASE_URL, ORG_ID, SCHEDULE_ID, RESERVATIONS_URL,
 )
 from utils.login import login
+from utils.scheduler import reveal
 from utils.booking_date import select_booking_date, parse_booking_date
 from utils.direct_api import (
     extract_booking_tokens, extract_cookies_from_context,
@@ -421,23 +423,14 @@ def check_court_availability(court: str, reservation_time: str, end_time: str):
     log.info(f"Checking court: {court} for {reservation_time}")
     page = get_page()
 
-    # Scroll scheduler viewport to ensure time slots below the fold are rendered
-    try:
-        scheduler = page.locator(".k-scheduler-content")
-        scheduler.wait_for(timeout=5000)
-        for frac in (0.0, 0.5, 1.0):
-            scheduler.evaluate("el => { el.scrollTop = el.scrollHeight * %s; }" % frac)
-            page.wait_for_timeout(150)
-    except Exception as e:
-        log.debug(f"  Scheduler scroll skipped: {e}")
-
     # Use exact text match with 'Reserve X:XX PM' to avoid partial matches
     # e.g., '2:00 PM' would otherwise match '12:00 PM'
     try:
         start_time_btn = page.locator(
-            f"button[data-courtlabel='{court}']:text('Reserve {reservation_time}')"
+            f"{SLOT_BUTTON}[data-court-label='{court}']:text('Reserve {reservation_time}')"
         )
-        start_time_btn.wait_for(timeout=5000)
+        if not reveal(page, start_time_btn):
+            raise TimeoutError("start slot not rendered at any scroll position")
         log.info(f"  Found start time {reservation_time}")
     except Exception:
         raise CourtUnavailableError(
@@ -448,9 +441,10 @@ def check_court_availability(court: str, reservation_time: str, end_time: str):
     try:
         # Verify the time slot is available by checking the end time
         end_time_btn = page.locator(
-            f"button[data-courtlabel='{court}']:text('Reserve {end_time}')"
+            f"{SLOT_BUTTON}[data-court-label='{court}']:text('Reserve {end_time}')"
         )
-        end_time_btn.wait_for(timeout=5000)
+        if not reveal(page, end_time_btn):
+            raise TimeoutError("end slot not rendered at any scroll position")
         log.info(f"  Found end time {end_time} - slot available!")
     except Exception:
         raise CourtUnavailableError(
@@ -459,6 +453,8 @@ def check_court_availability(court: str, reservation_time: str, end_time: str):
             f"  Another reservation may overlap with your requested time slot."
         )
 
+    # The end-slot scroll can move the start slot out of the rendered rows.
+    reveal(page, start_time_btn)
     start_time_btn.click()
 
 

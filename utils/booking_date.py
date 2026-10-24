@@ -6,6 +6,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from constants import get_page, BASE_URL, ORG_ID, SCHEDULE_ID, MAX_DAYS_AHEAD
 from utils.exceptions import DateSelectionError
+from utils.scheduler import close_date_picker
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +137,7 @@ def _attempt_date_selection(page, target_date: datetime):
         arg=[DATE_LABEL, expected],
         timeout=10000,
     )
+    close_date_picker(page)
 
 
 def select_booking_date(date: str | datetime | None = None):
