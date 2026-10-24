@@ -85,19 +85,15 @@ def find_reservation(page: Page, day: date, court: str) -> str | None:
     page.wait_for_timeout(2000)
     # Cards read like "Mon, Oct 5th, 8:00 PM - 11:00 PM ... Pickleball Court #8A (Bubble B)".
     cards = page.eval_on_selector_all(
-        "a[data-testid=details-btn]",
-        """els => els.map(e => {
-            let n = e;
-            while (n.parentElement && n.parentElement.querySelectorAll('a[data-testid=details-btn]').length === 1) n = n.parentElement;
-            return [n.innerText, e.getAttribute('href')];
-        })""",
+        "[data-testid^=booking-card-wrapper-]",
+        "els => els.map(e => [e.innerText, e.dataset.testid.replace('booking-card-wrapper-', '')])",
     )
     when = f"{day:%a}, {day:%b} {_ordinal(day.day)}"
     court_re = re.compile(rf"Court #?{re.escape(court)}\b")
-    hits = [href for text, href in cards if when in text and court_re.search(text)]
+    hits = [rid for text, rid in cards if when in text and court_re.search(text)]
     if len(hits) > 1:
         log.warning(f"  {len(hits)} reservations for {court} on {day}, using the first")
-    return hits[0].rstrip("/").split("/")[-1] if hits else None
+    return hits[0] if hits else None
 
 
 def _open(page: Page, rid: str) -> None:
