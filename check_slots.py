@@ -39,6 +39,9 @@ log = logging.getLogger(__name__)
 
 app = typer.Typer(help="Check available court slots on CourtReserve.")
 
+SLOT_BUTTON = '[data-testid="reserve-slot-btn"]'
+
+
 
 def get_available_slots() -> dict[str, list[str]]:
     """
@@ -52,66 +55,33 @@ def get_available_slots() -> dict[str, list[str]]:
 
     log.info("Scanning for available time slots...")
 
-    # Wait for the scheduler to fully load
     log.info("Waiting for scheduler to load...")
     try:
-        page.wait_for_selector(".k-scheduler-content", timeout=15000)
-        log.info("  Scheduler content found")
-        # Wait for slot buttons to appear (more reliable than fixed wait)
-        page.wait_for_selector("button.slot-btn[data-courtlabel]", timeout=10000)
+        page.wait_for_selector(SLOT_BUTTON, timeout=15000)
         log.info("  Slot buttons found")
     except Exception as e:
         log.warning(f"  Scheduler load timeout: {e}")
-        # Fallback to brief wait only if selector fails
         page.wait_for_timeout(1000)
 
-    # Scroll the scheduler viewport to force lazy-loaded time slots to render
+    # The scheduler body is the nearest scrolling ancestor of a slot. Scroll it in a few
+    # passes in case the grid renders rows lazily.
     try:
-        scheduler = page.locator(".k-scheduler-content")
-        scheduler.wait_for(timeout=5000)
-        # Scroll in a few passes (top, mid, bottom) to trigger virtualized rows
-        heights = [0.0, 0.5, 1.0]
-        for frac in heights:
-            scheduler.evaluate("el => { el.scrollTop = el.scrollHeight * %s; }" % frac)
+        for frac in (0.0, 0.5, 1.0):
+            page.evaluate(
+                """(args) => {
+                    let n = document.querySelector(args.sel);
+                    while (n && !(n.scrollHeight > n.clientHeight && /auto|scroll/.test(getComputedStyle(n).overflowY))) n = n.parentElement;
+                    if (n) n.scrollTop = n.scrollHeight * args.frac;
+                }""",
+                {"sel": SLOT_BUTTON, "frac": frac},
+            )
             page.wait_for_timeout(200)
     except Exception as e:
         log.debug(f"  Scheduler scroll skipped: {e}")
 
-    # Find available slot buttons
-    # Available slots have the "slot-btn" class WITHOUT the "hide" class
-    # Reserved slots have buttons with the "hide" class (should be excluded)
-    log.info("Searching for available slot buttons...")
-
-    # Look for buttons that:
-    # 1. Have data-courtlabel attribute
-    # 2. Are not disabled
-    # 3. Have the slot-btn class (available slots)
-    # 4. Do NOT have the "hide" class (reserved slots have this)
-    slot_buttons = page.query_selector_all("button.slot-btn[data-courtlabel]:not([disabled]):not(.hide)")
-
-    log.info(f"Found {len(slot_buttons)} available slot buttons (excluding hidden)")
-
-    # Debug: Check how many total and hidden buttons exist
-    all_slot_buttons = page.query_selector_all("button.slot-btn[data-courtlabel]")
-    hidden_buttons = page.query_selector_all("button.slot-btn[data-courtlabel].hide")
-    log.info(f"  Total slot buttons: {len(all_slot_buttons)}, Hidden (reserved): {len(hidden_buttons)}")
-
-    # If no buttons found with slot-btn class, try broader search for debugging
-    if len(slot_buttons) == 0:
-        log.warning("No visible slot-btn buttons found, trying broader search...")
-        all_buttons = page.query_selector_all("button[data-courtlabel]")
-        log.info(f"  Found {len(all_buttons)} total buttons with data-courtlabel")
-
-        # Check what classes these buttons have
-        if all_buttons:
-            sample = all_buttons[0]
-            classes = sample.get_attribute("class") or ""
-            text = (sample.text_content() or "").strip()[:50]
-            log.info(f"  Sample button - class: '{classes}', text: '{text}'")
-
-        # Fall back to broader selector (still excluding hide)
-        slot_buttons = page.query_selector_all("button[data-courtlabel]:not([disabled]):not(.hide)")
-        log.info(f"  Using fallback: found {len(slot_buttons)} buttons")
+    # Only open slots render a reserve button. Reserved blocks and the waitlist column do not.
+    slot_buttons = page.query_selector_all(SLOT_BUTTON)
+    log.info(f"Found {len(slot_buttons)} available slot buttons")
 
     # Group by court
     slots_by_court: dict[str, list[str]] = defaultdict(list)
@@ -121,7 +91,7 @@ def get_available_slots() -> dict[str, list[str]]:
     log.info("Parsing slot buttons...")
     for button in slot_buttons:
         try:
-            court = button.get_attribute("data-courtlabel")
+            court = button.get_attribute("data-court-label")
             time_text = (button.text_content() or "").strip()
 
             if court and time_text:

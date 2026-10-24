@@ -90,85 +90,52 @@ def parse_booking_date(value: str | None) -> datetime:
 # never recover, so retrying from a fresh page is strictly better than waiting.
 MAX_DATE_SELECT_ATTEMPTS = 3
 
-# Kendo marks the chosen day cell with one of these, depending on version.
-_SELECTED_CELL_CLASSES = ("k-selected", "k-state-selected")
+DATE_LABEL = '[data-testid="scheduler-date-label"]'
 
 
 def _open_date_picker(page):
-    """Open the calendar popup on the bookings page."""
+    """Open the calendar popup by clicking the date label above the scheduler."""
     try:
-        date_picker = page.locator('a[data-testid="link-0"]')
-        date_picker.wait_for(timeout=15000)
-        date_picker.click()
+        label = page.locator(DATE_LABEL)
+        label.wait_for(timeout=15000)
+        label.click()
     except Exception as e:
         raise DateSelectionError(
             f"Could not find the date picker on the bookings page.\n"
             f"  The page may not have loaded correctly, or you may not be logged in.\n"
             f"  Original error: {e}"
         )
-    page.wait_for_selector(".k-calendar", timeout=5000)
+    page.wait_for_selector(".ant-picker-dropdown:not(.ant-picker-dropdown-hidden)", timeout=5000)
 
 
-def _cell_is_selected(page, formatted_date: str) -> bool:
+def _attempt_date_selection(page, target_date: datetime):
     """
-    Report whether Kendo considers the target day selected.
-
-    Reads the widget's own state rather than the picker's label, whose format
-    is not something we can rely on.
-    """
-    classes = page.evaluate(
-        """(value) => {
-            const cell = document.querySelector(`a[data-value="${value}"]`);
-            if (!cell) return null;
-            // Kendo puts the state class on the <td>, not the <a>.
-            return (cell.closest('td') || cell).className || "";
-        }""",
-        formatted_date,
-    )
-    if classes is None:
-        return False
-    return any(c in classes for c in _SELECTED_CELL_CLASSES)
-
-
-def _attempt_date_selection(page, target_date: datetime, formatted_date: str):
-    """
-    One full attempt: open the picker, find the day cell, click it.
+    One full attempt: open the picker, click the day cell, confirm the label.
 
     Raises on any failure so the caller can retry from a freshly loaded page.
     """
     _open_date_picker(page)
 
-    date_element = page.locator(f'a[data-value="{formatted_date}"]')
-    date_element.wait_for(timeout=10000)
-
-    try:
-        # Short timeout so we fail fast instead of burning the default 30s
-        # retrying against an overlay (e.g. the mmenu slideout header logo,
-        # class "mm-slideout", which has been observed intercepting pointer
-        # events on the calendar date cell).
-        date_element.click(timeout=5000)
-        return
-    except Exception as click_err:
-        # Fall back to dispatching the DOM click event directly. This skips
-        # Playwright's actionability/hit-test checks, so an overlapping
-        # element or a cell that briefly goes not-visible can't block it.
-        # Kendo's calendar binds its handler to the cell's click event, so
-        # this still triggers date selection.
-        log.warning(
-            f"Normal click on date cell failed ({click_err.__class__.__name__}); "
-            f"falling back to dispatch_event('click')"
-        )
-        date_element.dispatch_event("click")
-
-    # The intercepting click can also dismiss the calendar, so a closed popup
-    # is not proof the date took. Confirm against the widget before returning:
-    # proceeding on an unselected date would silently book the wrong day.
-    if not _cell_is_selected(page, formatted_date):
+    # The cell's title is the ISO date. Days outside the booking window carry the disabled class.
+    cell = page.locator(
+        f'.ant-picker-dropdown:not(.ant-picker-dropdown-hidden) '
+        f'td.ant-picker-cell[title="{target_date.strftime("%Y-%m-%d")}"]'
+    )
+    cell.wait_for(timeout=10000)
+    if "ant-picker-cell-disabled" in (cell.get_attribute("class") or ""):
         raise DateSelectionError(
-            f"dispatch_event('click') did not select "
-            f"{target_date.strftime('%Y-%m-%d')} in the calendar widget"
+            f"{target_date.strftime('%Y-%m-%d')} is outside the booking window in the calendar"
         )
-    log.info("  Verified date selection after dispatch_event fallback")
+    cell.click(timeout=5000)
+
+    # The label above the scheduler is the page's own record of the shown day. Proceeding on
+    # the wrong day would book the wrong day.
+    expected = f"{target_date.strftime('%A, %B')} {target_date.day}"
+    page.wait_for_function(
+        """([sel, text]) => document.querySelector(sel)?.textContent.trim().endsWith(text)""",
+        arg=[DATE_LABEL, expected],
+        timeout=10000,
+    )
 
 
 def select_booking_date(date: str | datetime | None = None):
@@ -207,10 +174,6 @@ def select_booking_date(date: str | datetime | None = None):
     else:
         day_label = f"{days_ahead} days from now"
 
-    # Format: YYYY/M/D (month is 0-indexed in JS, but not in Python)
-    # The original JS uses: futureDate.getMonth() which is 0-indexed
-    formatted_date = f"{target_date.year}/{target_date.month - 1}/{target_date.day}"
-
     page = get_page()
     last_error: Exception | None = None
 
@@ -226,7 +189,7 @@ def select_booking_date(date: str | datetime | None = None):
         )
 
         try:
-            _attempt_date_selection(page, target_date, formatted_date)
+            _attempt_date_selection(page, target_date)
             log.info("  Date selected")
             return
         except Exception as e:
