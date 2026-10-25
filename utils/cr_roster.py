@@ -61,14 +61,18 @@ class TooEarly(Rejected):
 TOO_EARLY_RE = re.compile(r"only allowed to reserve up to (\d{1,2}/\d{1,2}/\d{4}, \d{1,2}:\d{2} [AP]M)")
 
 
-def _check(kind: str, status: int, body: str) -> None:
-    if status == 200 and '"isValid":true' in body:
-        return
+def _refusal(kind: str, status: int, body: str) -> Rejected:
     m = TOO_EARLY_RE.search(body)
     if m:
         limit = datetime.strptime(m.group(1), "%m/%d/%Y, %I:%M %p").replace(tzinfo=LOCAL_TZ)
-        raise TooEarly(kind, status, body, limit)
-    raise Rejected(kind, status, body)
+        return TooEarly(kind, status, body, limit)
+    return Rejected(kind, status, body)
+
+
+def _check(kind: str, status: int, body: str) -> None:
+    if status == 200 and '"isValid":true' in body:
+        return
+    raise _refusal(kind, status, body)
 
 
 def _blamed(message: str, names: list[str]) -> str | None:
@@ -254,9 +258,11 @@ def edit(page: Page, rid: str, remove_orgs: list[str], adds: dict[str, str]) -> 
             page.get_by_role("button", name="Yes").click(timeout=10000)
             row(org).wait_for(timeout=10000)
         except PlaywrightTimeoutError:
-            # An ineligible player may be refused at add time, so surface the toast text for _blamed.
-            toast = " ".join(page.locator("[role=alert], .ant-message, .ant-notification").all_inner_texts())
-            raise Rejected("Edit", 0, toast or f"{name} could not be added") from None
+            # An ineligible player may be refused at add time with a toast. A timeout with no toast is a plain failure.
+            toast = " ".join(page.locator("[role=alert], .ant-message, .ant-notification").all_inner_texts()).strip()
+            if not toast:
+                raise
+            raise _refusal("Edit", 0, toast) from None
     saves = []
     track = lambda r: saves.append(r) if r.request.method == "POST" and "/UpdateMyReservation/" in r.url else None
     page.on("response", track)
@@ -272,7 +278,7 @@ def edit(page: Page, rid: str, remove_orgs: list[str], adds: dict[str, str]) -> 
     if saves:
         _check("Edit", saves[-1].status, saves[-1].text())
     elif error.count():
-        raise Rejected("Edit", 0, error.first.inner_text())
+        raise _refusal("Edit", 0, error.first.inner_text())
     else:
         raise RuntimeError("Edit saved nothing within 30s")
 
