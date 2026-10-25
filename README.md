@@ -400,12 +400,12 @@ restarts the WhatsApp sidecar when `whatsapp/` changed.
 
 The job refuses, and retries on the next poll, in three cases:
 
-- Inside the quiet window from `utils/roster_loop.py` (19:40 to 20:15 on the bot Mac).
+- Inside the quiet window from `utils/roster_loop.py` (19:40 to 20:15 Eastern).
 - While a `court_booking.py` or `open_play.py` process runs, because a restart kills it.
 - When the checkout has uncommitted changes.
 
 Each refusal, deploy, and failure adds one line to `logs/autodeploy.log` on the
-bot Mac. A pull failure leaves the old bot running. A bot that is not alive 30
+bot Mac. A pull failure leaves the old bot running. A failed pip or sidecar step after the pull is retried on the next poll. A bot that is not alive 30
 seconds after the restart counts as failed and stays down. Both failures post
 one Discord notice through `DISCORD_WEBHOOK_URL`. There is no rollback.
 

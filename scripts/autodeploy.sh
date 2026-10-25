@@ -91,8 +91,9 @@ fi
 if "$PYTHON" -c '
 import sys
 from datetime import datetime
+from constants import LOCAL_TZ
 from utils.roster_loop import QUIET_START, QUIET_END
-now = datetime.now()
+now = datetime.now(LOCAL_TZ)
 sys.exit(0 if QUIET_START <= (now.hour, now.minute) < QUIET_END else 1)
 ' 2>/dev/null; then
   quiet=1
@@ -129,15 +130,25 @@ if [ "$dry_run" = 1 ]; then
   exit 0
 fi
 
-[ "$head" = "$target" ] && exit 0
+# A step that failed after the pull leaves this marker. It holds the pre-pull
+# commit, then the changed files, so the next poll finishes the deploy.
+PENDING="logs/autodeploy.pending"
+[ "$head" = "$target" ] && [ ! -f "$PENDING" ] && exit 0
 
 if [ -n "$refusal" ]; then
   say "refuse: $refusal (pending ${target:0:7})"
   exit 0
 fi
 
-changed="$(git diff --name-only "$head" "$target")"
-git pull --ff-only --quiet || fail "git pull --ff-only failed at ${head:0:7}"
+if [ -f "$PENDING" ]; then
+  from="$(head -n 1 "$PENDING")"
+  changed="$(tail -n +2 "$PENDING")"
+else
+  from="$head"
+  changed="$(git diff --name-only "$head" "$target")"
+  git pull --ff-only --quiet || fail "git pull --ff-only failed at ${head:0:7}"
+  { echo "$from"; echo "$changed"; } >"$PENDING"
+fi
 
 if echo "$changed" | grep -qx 'requirements.txt'; then
   "$PYTHON" -m pip install -r requirements.txt >>"$DEPLOY_LOG" 2>&1 \
@@ -151,6 +162,8 @@ if echo "$changed" | grep -q '^whatsapp/'; then
     || fail "whatsapp sidecar restart failed after pulling ${target:0:7}"
 fi
 
+# The restart is not retried: a bot that fails to come up stays down.
+rm -f "$PENDING"
 # Same stop and start steps as `remote.sh restart`.
 tmux kill-session -t "=$SESSION" 2>/dev/null || true
 eval "$BOT_PS_CMD"
@@ -169,8 +182,8 @@ sleep 30
 eval "$BOT_PS_CMD"
 [ -n "$out" ] || fail "bot.py is not running 30s after restart at ${target:0:7}"
 
-rm -f "$FAILED_MARK"
-say "deployed ${head:0:7} -> ${target:0:7}: $(git log -1 --format=%s)"
+rm -f "$FAILED_MARK" "$PENDING"
+say "deployed ${from:0:7} -> ${target:0:7}: $(git log -1 --format=%s)"
 }
 
 main "$@"
