@@ -409,6 +409,22 @@ bot Mac. A pull failure leaves the old bot running. A bot that is not alive 30
 seconds after the restart counts as failed and stays down. Both failures post
 one Discord notice through `DISCORD_WEBHOOK_URL`. There is no rollback.
 
+### Instant deploy on push
+
+`.github/workflows/deploy-bot.yml` runs `autodeploy.sh` on the bot Mac as soon
+as a push to `discord-bot` lands. It skips pushes that only touch `*.md` or
+`.github/`. It needs a self-hosted runner on the bot Mac, registered once:
+
+1. In the GitHub repo, open Settings > Actions > Runners > New self-hosted runner (macOS).
+2. Run the download and `./config.sh` commands it shows on the bot Mac. Add the
+   label `courtbot` when `config.sh` asks for labels.
+3. Run `./svc.sh install && ./svc.sh start` in the runner folder, so the
+   runner survives a reboot.
+
+The guards still apply. A push during the quiet window or a booking is refused
+and not retried by the workflow, so keep the launchd poll installed as the
+retry. It does nothing when there are no new commits.
+
 ### Letting the agent drive it
 
 Add these to the `permissions.allow` list in `.claude/settings.local.json` so

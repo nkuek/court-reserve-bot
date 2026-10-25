@@ -57,6 +57,9 @@ fail() {
   exit 1
 }
 
+# Everything below runs inside one function. bash reads a script as it runs,
+# so the `git pull` below would otherwise rewrite this file under the reader.
+main() {
 if [ "$dry_run" = 0 ]; then
   if ! mkdir "$LOCK" 2>/dev/null; then
     say "skip: another deploy holds $LOCK"
@@ -149,3 +152,7 @@ eval "$BOT_PS_CMD"
 [ -n "$out" ] || fail "bot.py is not running 30s after restart at ${target:0:7}"
 
 say "deployed ${head:0:7} -> ${target:0:7}: $(git log -1 --format=%s)"
+}
+
+main "$@"
+exit
