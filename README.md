@@ -176,34 +176,6 @@ Run bookings via Discord commands instead of the command line.
 | `/schedule book`              | Schedule recurring court booking   |
 | `/ping`                       | Check if bot is online             |
 
-## Deploying to Fly.io
-
-Deploy the bot to run 24/7 in the cloud.
-
-```bash
-# Install Fly CLI
-brew install flyctl  # or: curl -L https://fly.io/install.sh | sh
-
-# Login
-fly auth login
-
-# Launch (first time)
-fly launch --no-deploy
-
-# Create volume for data persistence
-fly volumes create courtbot_data --size 1 --region iad
-
-# Set secrets
-fly secrets set DISCORD_BOT_TOKEN=your_token
-fly secrets set ENCRYPTION_KEY=your_key
-
-# Deploy
-fly deploy
-
-# View logs
-fly logs
-```
-
 ## WhatsApp group sign-up post
 
 After a successful booking the bot lists the court in the pickleball sign-up app, with
@@ -433,8 +405,6 @@ host.
 ├── open_play.py              # Open play registration
 ├── check_slots.py            # Check availability
 ├── requirements.txt          # Python dependencies
-├── Dockerfile                # Container definition
-├── fly.toml                  # Fly.io configuration
 ├── scripts/
 │   └── remote.sh             # Drive the remote Mac deployment over SSH
 ├── whatsapp/

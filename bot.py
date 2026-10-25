@@ -3660,7 +3660,7 @@ async def _run_script(interaction: discord.Interaction, cmd: list[str], task_nam
             value="This is usually a temporary issue. Try again in a few minutes.",
             inline=False
         )
-        embed.set_footer(text="If the problem persists, check the Fly.io logs.")
+        embed.set_footer(text="If the problem persists, check the bot logs.")
 
         # Send error via DM for privacy
         try:
