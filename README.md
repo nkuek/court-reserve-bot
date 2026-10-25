@@ -401,7 +401,7 @@ restarts the WhatsApp sidecar when `whatsapp/` changed.
 The job refuses, and retries on the next poll, in three cases:
 
 - Inside the quiet window from `utils/roster_loop.py` (19:40 to 20:15 on the bot Mac).
-- While a `court_booking.py` process runs, because restarting kills it.
+- While a `court_booking.py` or `open_play.py` process runs, because a restart kills it.
 - When the checkout has uncommitted changes.
 
 Each refusal, deploy, and failure adds one line to `logs/autodeploy.log` on the

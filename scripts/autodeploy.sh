@@ -51,7 +51,15 @@ send_discord_notification(sys.argv[1], title="Bot auto-deploy failed", success=F
 ' "$1" >>"$DEPLOY_LOG" 2>&1 || say "discord notice failed"
 }
 
+# A failure that repeats on every poll posts one notice. The marker holds the
+# last failure text, and a successful deploy clears it.
+FAILED_MARK="logs/autodeploy.failed"
+
 fail() {
+  if [ "$(cat "$FAILED_MARK" 2>/dev/null)" = "$*" ]; then
+    exit 1
+  fi
+  echo "$*" >"$FAILED_MARK"
   say "FAILED: $*"
   notify_failure "$*"
   exit 1
@@ -62,10 +70,16 @@ fail() {
 main() {
 if [ "$dry_run" = 0 ]; then
   if ! mkdir "$LOCK" 2>/dev/null; then
-    say "skip: another deploy holds $LOCK"
-    exit 0
+    # A killed run or a reboot leaves the lock behind. Reclaim it when its owner is gone.
+    if kill -0 "$(cat "$LOCK/pid" 2>/dev/null)" 2>/dev/null; then
+      say "skip: another deploy holds $LOCK"
+      exit 0
+    fi
+    rm -rf "$LOCK"
+    mkdir "$LOCK" || exit 0
   fi
-  trap 'rmdir "$LOCK"' EXIT
+  echo $$ >"$LOCK/pid"
+  trap 'rm -rf "$LOCK"' EXIT
 fi
 
 # Guards run before the fetch. A refusal leaves the checkout alone, so the
@@ -88,8 +102,8 @@ fi
 refusal=""
 if [ "$quiet" = 1 ]; then
   refusal="inside the booking quiet window"
-elif pgrep -f court_booking.py >/dev/null; then
-  refusal="a court_booking.py run is active"
+elif pgrep -f 'court_booking.py|open_play.py' >/dev/null; then
+  refusal="a booking or open play run is active"
 elif [ -n "$(git status --porcelain)" ]; then
   refusal="working tree is dirty"
 fi
@@ -151,6 +165,7 @@ sleep 30
 eval "$BOT_PS_CMD"
 [ -n "$out" ] || fail "bot.py is not running 30s after restart at ${target:0:7}"
 
+rm -f "$FAILED_MARK"
 say "deployed ${head:0:7} -> ${target:0:7}: $(git log -1 --format=%s)"
 }
 
