@@ -19,7 +19,7 @@
 #   stop [--force]  stop the tmux session; --force also kills a stray bot.py
 #   restart         stop --force, then start
 #   deploy [--dry-run]  run scripts/autodeploy.sh on the remote: pull and restart if safe
-#   autodeploy-install    install the launchd job that polls for new commits every 5 minutes
+#   autodeploy-install    install the launchd job that polls for new commits every minute
 #   autodeploy-uninstall  remove that job
 #   book [args]     run a one-off court_booking.py with the given args
 #   exec <cmd>      run an arbitrary command in the remote repo
