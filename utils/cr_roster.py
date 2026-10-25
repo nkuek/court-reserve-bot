@@ -8,7 +8,7 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
-from playwright.sync_api import Page
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from constants import BASE_URL, ERROR_TOAST, LOCAL_TZ, ORG_ID, SCHEDULE_ID, get_browser
 from utils.login import _attempt_login
@@ -45,7 +45,8 @@ class Rejected(RuntimeError):
         try:
             self.message = json.loads(body).get("message") or ""
         except (ValueError, AttributeError):
-            self.message = ""
+            # The modal's toasts are plain text.
+            self.message = body
 
 
 class TooEarly(Rejected):
@@ -245,20 +246,29 @@ def edit(page: Page, rid: str, remove_orgs: list[str], adds: dict[str, str]) -> 
         row(org).wait_for(state="detached", timeout=10000)
     search = page.get_by_placeholder("Search for other player(s) to play with")
     for org, name in adds.items():
-        search.fill(name)
-        # The option's id is the org member id, so two members with one name stay apart.
-        page.locator(f"[data-testid=reservation-additional-player-option-{org}]").click(timeout=10000)
-        # Each add asks for confirmation before the row appears.
-        page.get_by_role("button", name="Yes").click(timeout=10000)
-        row(org).wait_for(timeout=10000)
+        try:
+            search.fill(name)
+            # The option's id is the org member id, so two members with one name stay apart.
+            page.locator(f"[data-testid=reservation-additional-player-option-{org}]").click(timeout=10000)
+            # Each add asks for confirmation before the row appears.
+            page.get_by_role("button", name="Yes").click(timeout=10000)
+            row(org).wait_for(timeout=10000)
+        except PlaywrightTimeoutError:
+            # An ineligible player may be refused at add time, so surface the toast text for _blamed.
+            toast = " ".join(page.locator("[role=alert], .ant-message, .ant-notification").all_inner_texts())
+            raise Rejected("Edit", 0, toast or f"{name} could not be added") from None
     saves = []
-    page.on("response", lambda r: saves.append(r) if r.request.method == "POST" and "/UpdateMyReservation/" in r.url else None)
-    page.locator("[data-testid=reservation-mobile-footer]").get_by_role("button", name="Save").click()
-    error = page.get_by_text(ERROR_TOAST)
-    # A saved reservation closes the modal. A refused one leaves it open.
-    deadline = time.time() + 30
-    while time.time() < deadline and page.locator(EDIT_MODAL).count() and not error.count() and not saves:
-        page.wait_for_timeout(200)
+    track = lambda r: saves.append(r) if r.request.method == "POST" and "/UpdateMyReservation/" in r.url else None
+    page.on("response", track)
+    try:
+        page.locator("[data-testid=reservation-mobile-footer]").get_by_role("button", name="Save").click()
+        error = page.get_by_text(ERROR_TOAST)
+        # A saved reservation closes the modal. A refused one leaves it open.
+        deadline = time.time() + 30
+        while time.time() < deadline and page.locator(EDIT_MODAL).count() and not error.count() and not saves:
+            page.wait_for_timeout(200)
+    finally:
+        page.remove_listener("response", track)
     if saves:
         _check("Edit", saves[-1].status, saves[-1].text())
     elif error.count():
