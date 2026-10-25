@@ -27,7 +27,7 @@ from constants import (
     SLOT_BUTTON, ERROR_TOAST,
     get_page, get_context, close_browser, COURTS, VALID_DURATIONS,
     FACILITY_CLOSING_HOUR, FACILITY_CLOSING_MINUTE, set_trace_label,
-    BASE_URL, ORG_ID, SCHEDULE_ID, RESERVATIONS_URL,
+    BASE_URL, ORG_ID, SCHEDULE_ID, RESERVATIONS_URL, MAX_DAYS_AHEAD,
 )
 from utils.login import login
 from utils.scheduler import reveal
@@ -943,8 +943,13 @@ def main(
     booking_date_str = booking_date.strftime("%a %m/%d")  # e.g., "Sat 12/14"
     hour, minute = map(int, time_str.split(":"))
 
-    # Calculate the target click time (reservation time on today's date for the countdown)
-    target_click_time = datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+    # A slot opens exactly MAX_DAYS_AHEAD days before it starts. When that moment has
+    # passed, the slot is already open, so fire shortly after now instead of waiting.
+    opens_at = booking_date.replace(hour=hour, minute=minute, second=0, microsecond=0) - timedelta(days=MAX_DAYS_AHEAD)
+    already_open = opens_at <= datetime.now()
+    target_click_time = (
+        datetime.now().replace(microsecond=0) + timedelta(seconds=3) if already_open else opens_at
+    )
 
     # Parse wait time if provided (validate early, but wait later after login)
     wait_target = None
@@ -994,14 +999,19 @@ def main(
 
     # Use the target click time computed earlier
     target = target_click_time
+
+    def fire_target() -> datetime:
+        # Login and token setup take a while, so an open slot gets a fresh target at fire time.
+        return datetime.now() + timedelta(seconds=3) if already_open else target
     reservation_time = to_12_hour(time_str)
 
     # Compute actual end time for logging
-    actual_end_time = to_12_hour(target + timedelta(hours=duration))
+    slot_start = datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+    actual_end_time = to_12_hour(slot_start + timedelta(hours=duration))
 
     # Compute end time slot (duration - 30 minutes) for availability checking
     adjusted_duration = timedelta(hours=duration) - timedelta(minutes=30)
-    end_time_dt = target + adjusted_duration
+    end_time_dt = slot_start + adjusted_duration
     end_time = to_12_hour(end_time_dt)
 
     # Start the booking process
@@ -1025,7 +1035,7 @@ def main(
         if wait_until_time:
             log.info(f"Waiting until {wait_target.strftime('%H:%M:%S')} before scanning courts...")
         else:
-            log.info(f"Default behavior: waiting until 2 minutes before {target_click_time.strftime('%H:%M:%S')}")
+            log.info(f"Default behavior: waiting until 2 minutes before the slot opens at {target_click_time.strftime('%a %H:%M:%S')}")
         wait_until(wait_target)
 
         # Refresh the page after waiting to ensure a fresh server session.
@@ -1034,7 +1044,7 @@ def main(
         log.info("Refreshing page after wait...")
         select_booking_date(booking_date)
     else:
-        log.info("Target time is less than 2 minutes away, proceeding immediately")
+        log.info("Slot is already open or opens in under 2 minutes, proceeding immediately")
 
     # Scan for available courts first (only try courts that are actually available)
     if court:
@@ -1219,7 +1229,7 @@ def main(
             booking_date=booking_date,
             start_time_str=start_time_str,
             duration_minutes=duration_minutes,
-            target_time=target,
+            target_time=fire_target(),
             dry_run=dry_run,
             num_clients=direct_clients,
             fire_offsets_ms=direct_offsets_ms,
@@ -1361,7 +1371,7 @@ def main(
             reservation_time=reservation_time,
             end_time=end_time,
             duration=duration,
-            target_time=target,
+            target_time=fire_target(),
             booking_date_str=booking_date_str,
             attempts_per_court=attempts_per_court,
         )
@@ -1384,7 +1394,7 @@ def main(
             click_disclosure()
             actual_duration = add_duration(duration)
 
-            booking_succeeded = click_save_button(target)
+            booking_succeeded = click_save_button(fire_target())
 
             # Check for SweetAlert (error modal) - may have appeared during wait
             alerts = page.get_by_text(ERROR_TOAST).count() > 0
