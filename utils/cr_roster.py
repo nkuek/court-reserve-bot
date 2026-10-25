@@ -4,12 +4,13 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import date, datetime
 from pathlib import Path
 
 from playwright.sync_api import Page
 
-from constants import BASE_URL, LOCAL_TZ, ORG_ID, SCHEDULE_ID, get_browser
+from constants import BASE_URL, ERROR_TOAST, LOCAL_TZ, ORG_ID, SCHEDULE_ID, get_browser
 from utils.login import _attempt_login
 
 log = logging.getLogger(__name__)
@@ -22,6 +23,8 @@ SEARCH_URL = (
     "&isOpenReservation=false&organizationMemberIdsString=&userId={user}&filterValue={q}"
 )
 CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "cr_members.json"
+# The Edit Reservation button opens the same modal as Create Reservation.
+EDIT_MODAL = "[data-testid=reservation-create-page]"
 NOT_FOUND = "no CourtReserve member by that name"
 NO_NAME = "guest without a name"
 
@@ -140,8 +143,9 @@ def _favorites(rid: str) -> set[str]:
         _attempt_login(page, os.environ["EMAIL"], os.environ["PASSWORD"])
         _open(page, rid)
         page.locator("[data-testid=btn-swap-name]").first.click()
-        page.locator(".combobox-items-container li").first.wait_for(timeout=15000)
-        return set(page.eval_on_selector_all(".combobox-items-container li", "els => els.map(e => e.getAttribute('value'))"))
+        # The Substitute page lists favorites before any search. Each row's id is the org member id.
+        page.locator("[data-testid^=swap-players-row-]").first.wait_for(timeout=15000)
+        return set(page.eval_on_selector_all("[data-testid^=swap-players-row-]", "els => els.map(e => e.dataset.testid.replace('swap-players-row-', ''))"))
     finally:
         ctx.close()
 
@@ -228,31 +232,39 @@ def swap(page: Page, rid: str, out_org: str, in_member: str) -> None:
     _check("Swap", result["status"], result["body"])
 
 
-def edit(page: Page, rid: str, remove_orgs: list[str], add_orgs: list[str]) -> None:
-    """Removes and adds players in one save through the Edit Reservation form.
-
-    The form rebuilds its player fields from a server-rendered table, so it runs in the page
-    instead of as a plain POST.
-    """
+def edit(page: Page, rid: str, remove_orgs: list[str], adds: dict[str, str]) -> None:
+    """Removes players and adds members (org id to CourtReserve name) in one save through the Edit Reservation modal."""
     _open(page, rid)
     page.locator("[data-testid=btn-update-reservation]").click()
-    page.locator("#createReservation-Form").wait_for(timeout=20000)
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(2000)
+    page.locator(EDIT_MODAL).wait_for(timeout=20000)
+    row = lambda org: page.locator(f"[data-testid=reservation-player-row-o{org}]")
+    # The table renders after the modal opens.
+    page.locator("[data-testid^=reservation-player-row-]").first.wait_for(timeout=20000)
     for org in remove_orgs:
-        page.evaluate("id => calculateTotalDue(Number(id))", org)
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(1500)
-    if add_orgs:
-        page.evaluate("ids => { ids.forEach(id => selectedMembers.push({ OrgMemberId: id })); calculateTotalDue(null, true); }", add_orgs)
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(2500)
-    blank = page.evaluate("() => selectedMembers.filter(m => !$(`#hidden-memberid_${m.OrgMemberId}`).val()).map(m => String(m.OrgMemberId))")
-    if blank:
-        raise RuntimeError(f"Edit form never loaded players {blank}")
-    with page.expect_response(lambda r: "UpdateMyReservation" in r.url and r.request.method == "POST", timeout=30000) as resp:
-        page.evaluate("submitUpdateReservation()")
-    _check("Edit", resp.value.status, resp.value.text())
+        row(org).get_by_role("button", name="Remove").click()
+        row(org).wait_for(state="detached", timeout=10000)
+    search = page.get_by_placeholder("Search for other player(s) to play with")
+    for org, name in adds.items():
+        search.fill(name)
+        # The option's id is the org member id, so two members with one name stay apart.
+        page.locator(f"[data-testid=reservation-additional-player-option-{org}]").click(timeout=10000)
+        # Each add asks for confirmation before the row appears.
+        page.get_by_role("button", name="Yes").click(timeout=10000)
+        row(org).wait_for(timeout=10000)
+    saves = []
+    page.on("response", lambda r: saves.append(r) if r.request.method == "POST" and "/UpdateMyReservation/" in r.url else None)
+    page.locator("[data-testid=reservation-mobile-footer]").get_by_role("button", name="Save").click()
+    error = page.get_by_text(ERROR_TOAST)
+    # A saved reservation closes the modal. A refused one leaves it open.
+    deadline = time.time() + 30
+    while time.time() < deadline and page.locator(EDIT_MODAL).count() and not error.count() and not saves:
+        page.wait_for_timeout(200)
+    if saves:
+        _check("Edit", saves[-1].status, saves[-1].text())
+    elif error.count():
+        raise Rejected("Edit", 0, error.first.inner_text())
+    else:
+        raise RuntimeError("Edit saved nothing within 30s")
 
 
 def sync_court(page: Page, day: date, court: str, players: list[dict], booker: str) -> dict:
@@ -277,7 +289,8 @@ def sync_court(page: Page, day: date, court: str, players: list[dict], booker: s
                 swap(page, rid, remove[0]["org"], add[0]["member"])
                 action = "swapped"
             else:
-                edit(page, rid, [p["org"] for p in remove], [a["org"] for a in add])
+                names = {m["org"]: n for n, m in allowed.items()}
+                edit(page, rid, [p["org"] for p in remove], {a["org"]: names[a["org"]] for a in add})
                 action = "edited"
             break
         except Rejected as e:
@@ -364,7 +377,7 @@ def transfer(page: Page, day: date, court: str, to_cr_name: str) -> dict:
     target = found[to_cr_name]
     # The Sub form only offers members who aren't on the reservation yet.
     if any(p["org"] == target["org"] for p in current["players"]):
-        edit(page, rid, [target["org"]], [])
+        edit(page, rid, [target["org"]], {})
     swap(page, rid, me["org"], target["member"])
     still_mine = find_reservation(page, day, court) == rid
     after = current_players(page, rid) if still_mine else None
