@@ -364,6 +364,8 @@ anything it reports as MISSING (`brew install tmux`).
 ./scripts/remote.sh status          # tmux session, bot process, git revision
 ./scripts/remote.sh pull            # git pull --ff-only on the remote
 ./scripts/remote.sh restart         # restart the bot's tmux session
+./scripts/remote.sh deploy          # pull and restart now, if the guards allow
+./scripts/remote.sh deploy --dry-run   # print the guard decision and pending commits
 ./scripts/remote.sh logs 100        # last 100 log lines
 ./scripts/remote.sh follow          # stream the log
 ./scripts/remote.sh book --time 21:00 --duration 2   # one-off booking run
@@ -382,6 +384,30 @@ If the remote paths differ from the defaults, drop a `scripts/remote.env`
 COURTBOT_REPO=~/code/court-reserve-bot
 COURTBOT_TMUX=bot
 ```
+
+### Auto-deploy
+
+`autodeploy-install` adds a launchd job on the bot Mac. Every 5 minutes it runs
+`scripts/autodeploy.sh`, which fetches the checked-out branch's upstream. When
+there are new commits, it runs `git pull --ff-only` and restarts the bot. It
+also runs `pip install -r requirements.txt` when that file changed, and
+restarts the WhatsApp sidecar when `whatsapp/` changed.
+
+```bash
+./scripts/remote.sh autodeploy-install     # safe to re-run
+./scripts/remote.sh autodeploy-uninstall
+```
+
+The job refuses, and retries on the next poll, in three cases:
+
+- Inside the quiet window from `utils/roster_loop.py` (19:40 to 20:15 on the bot Mac).
+- While a `court_booking.py` process runs, because restarting kills it.
+- When the checkout has uncommitted changes.
+
+Each refusal, deploy, and failure adds one line to `logs/autodeploy.log` on the
+bot Mac. A pull failure leaves the old bot running. A bot that is not alive 30
+seconds after the restart counts as failed and stays down. Both failures post
+one Discord notice through `DISCORD_WEBHOOK_URL`. There is no rollback.
 
 ### Letting the agent drive it
 

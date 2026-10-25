@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.courtbot.autodeploy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/scripts/autodeploy.sh</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+  <key>StandardOutPath</key>
+  <string>__REPO__/logs/autodeploy.log</string>
+  <key>StandardErrorPath</key>
+  <string>__REPO__/logs/autodeploy.log</string>
+</dict>
+</plist>
