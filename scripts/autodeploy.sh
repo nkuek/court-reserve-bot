@@ -56,6 +56,10 @@ send_discord_notification(sys.argv[1], title="Bot auto-deploy failed", success=F
 FAILED_MARK="logs/autodeploy.failed"
 
 fail() {
+  if [ "$dry_run" = 1 ]; then
+    echo "FAILED: $*"
+    exit 1
+  fi
   if [ "$(cat "$FAILED_MARK" 2>/dev/null)" = "$*" ]; then
     exit 1
   fi
