@@ -24,6 +24,8 @@ log = logging.getLogger(__name__)
 GIVE_UP_AFTER = timedelta(hours=24)
 # Sign-up posts go out about five days ahead, so a 7-day pin lasts past sign-up close.
 SIGNUP_PIN_SECONDS = 7 * 24 * 3600
+# One-time skip. Final lineups for these dates stay unposted in the app, and the day passing drops them.
+SKIPPED_LINEUP_DATES = {"2026-11-06"}
 
 
 @tasks.loop(minutes=1)
@@ -58,6 +60,7 @@ async def dispatch_due_polls():
 # Posts this process already sent. If telling the app fails, the next run retries only the
 # telling, so a flaky app can never make the bot repost to the group every minute.
 _sent: set[tuple[str, str]] = set()
+_skipped_lineups: set[str] = set()
 _outbox_failing = False
 
 
@@ -76,6 +79,11 @@ async def relay_app_outbox():
         box = await asyncio.to_thread(signup_app.outbox)
         for item in box["lineups"]:
             sid = item["sessionId"]
+            if item.get("date") in SKIPPED_LINEUP_DATES:
+                if sid not in _skipped_lineups:
+                    _skipped_lineups.add(sid)
+                    log.info(f"Skipped the group lineup for {item['date']} (session {sid})")
+                continue
             await _post_once(("lineup", sid), item["text"], item["mentions"], lambda: signup_app.mark_lineup_posted(sid))
         for item in box["notices"]:
             nid = item["id"]
