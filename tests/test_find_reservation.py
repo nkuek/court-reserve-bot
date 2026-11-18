@@ -52,7 +52,8 @@ class MatchReservationTest(unittest.TestCase):
 
     def test_reads_the_id_from_the_card_class(self):
         html = bookings(NEXT_WEEK, TONIGHT)
-        self.assertEqual(self.match(html, date(2026, 11, 18), "6A"), "64133785")
+        with self.assertNoLogs("utils.cr_roster", "WARNING"):
+            self.assertEqual(self.match(html, date(2026, 11, 18), "6A"), "64133785")
 
     def test_matches_a_court_written_with_a_hash(self):
         html = bookings(TONIGHT, NEXT_WEEK)
