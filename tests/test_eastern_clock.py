@@ -62,5 +62,13 @@ class EasternClockTest(unittest.TestCase):
                 self.assertEqual(wait.seconds_until(opens), 30)
 
 
+class HostClockGuardTest(unittest.TestCase):
+    def test_wait_and_fire_modules_never_read_the_host_clock(self):
+        # These modules only compare against Eastern targets, so a bare datetime.now() would reintroduce the host zone.
+        for path in ("utils/wait.py", "utils/direct_api.py"):
+            with open(path) as f:
+                self.assertNotIn("datetime.now()", f.read(), path)
+
+
 if __name__ == "__main__":
     unittest.main()

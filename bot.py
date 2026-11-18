@@ -30,7 +30,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 from discord.ext import tasks
-from constants import VALID_DURATIONS, MAX_DAYS_AHEAD, LOCAL_TZ
+from constants import VALID_DURATIONS, MAX_DAYS_AHEAD, LOCAL_TZ, now_eastern
 from utils.poll_dispatcher import start_poll_dispatcher
 from utils.booker_prompt import CancelCourtButton, HandoffSelect, LeaveButton, PlayingButton, ask_booker
 from utils.user_store import (
@@ -363,9 +363,14 @@ COMMON_TIMES = [
     "8:00", "10:30", "18:00", "21:00",
 ]
 
+def _eastern_today() -> datetime:
+    """Eastern wall-clock now as a naive datetime. Stored run times and menu dates are naive Eastern."""
+    return now_eastern().replace(tzinfo=None)
+
+
 def get_date_options() -> list[tuple[str, str]]:
     """Generate date options with actual run dates and implied booking dates (+MAX_DAYS_AHEAD)."""
-    today = datetime.now()
+    today = _eastern_today()
 
     options = []
 
@@ -480,7 +485,7 @@ async def once_when_autocomplete(
 
 def get_openplay_date_options() -> list[tuple[str, str]]:
     """Generate date options for open play (Tuesdays and Thursdays only)."""
-    today = datetime.now()
+    today = _eastern_today()
     options = []
 
     # Look ahead up to 7 days to find the next Tuesdays/Thursdays
@@ -1972,13 +1977,13 @@ def _format_schedule_when(sched: dict) -> tuple[str, datetime | None]:
 
 def _next_n_dates(n: int = 5) -> list[datetime]:
     """Return next n dates including today."""
-    today = datetime.now().date()
+    today = _eastern_today().date()
     return [today + timedelta(days=i) for i in range(n)]
 
 
 def _compute_next_run_datetime(target_day: int, hour: int, minute: int) -> datetime:
     """Compute the next datetime in the future for the given weekday and time."""
-    now = datetime.now()
+    now = _eastern_today()
     candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     days_ahead = target_day - now.weekday()
     if days_ahead < 0 or (days_ahead == 0 and candidate <= now):
@@ -2262,7 +2267,7 @@ async def schedule_once(
         return
 
     # Parse date option similar to /book date
-    today = datetime.now().date()
+    today = _eastern_today().date()
     target_date = None
     if date.lower() == "today":
         target_date = today
@@ -2277,7 +2282,7 @@ async def schedule_once(
     elif "/" in date:
         try:
             month, day = map(int, date.split("/"))
-            target_date = datetime(datetime.now().year, month, day).date()
+            target_date = datetime(_eastern_today().year, month, day).date()
         except Exception:
             target_date = None
     elif date.lower() == "latest":
@@ -2300,7 +2305,7 @@ async def schedule_once(
         )
         return
 
-    if run_dt <= datetime.now():
+    if run_dt <= _eastern_today():
         await interaction.response.send_message(
             "❌ The time you entered is in the past. Please choose a future time.",
             ephemeral=True,
@@ -2824,7 +2829,7 @@ async def schedule_cancel(
         cancelled_pending = True
 
     # Mark as "ran today" to skip this instance
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = now_eastern().strftime("%Y-%m-%d")
     update_schedule_last_run(schedule_id, today_str)
 
     # Reschedule for next week
@@ -2876,7 +2881,7 @@ async def schedule_next_run(sched: dict):
     run_at = sched.get("run_at")
 
     # Calculate seconds until next run (timezone-aware to handle DST correctly)
-    now = datetime.now(LOCAL_TZ)
+    now = now_eastern()
     today_str = now.strftime("%Y-%m-%d")
 
     if is_one_time and run_at:
@@ -2970,7 +2975,7 @@ async def schedule_next_run(sched: dict):
         await asyncio.sleep(wait_seconds)
 
     # Double-check we haven't already run today (in case of restart)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = now_eastern().strftime("%Y-%m-%d")
     schedules = get_all_schedules()
     current_sched = next((s for s in schedules if s["id"] == schedule_id), None)
 
