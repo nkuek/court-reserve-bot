@@ -19,12 +19,12 @@ from typing import Annotated
 import typer
 from dotenv import load_dotenv
 
-from constants import get_page, close_browser, SLOT_BUTTON, ERROR_TOAST
+from constants import get_page, close_browser, SLOT_BUTTON, ERROR_TOAST, now_eastern
 from utils.login import login
 from utils.booking_date import select_booking_date, parse_booking_date
 from utils.discord import notify_open_play_success, notify_failure, notify_start
 from utils.scheduler import reveal
-from utils.wait import wait_until, parse_wait_time
+from utils.wait import wait_until, parse_wait_time, seconds_until
 
 
 # Load .env from the same directory as this script
@@ -124,7 +124,7 @@ def _wait_and_click(element, target_time: datetime, action_name: str = "click"):
     """Wait until target time and click the element with high precision."""
     log.info(f"Preparing to {action_name}...")
 
-    delay = (target_time - datetime.now()).total_seconds()
+    delay = seconds_until(target_time)
 
     if delay < 0:
         log.warning(f"Target time already passed, clicking immediately")
@@ -137,7 +137,7 @@ def _wait_and_click(element, target_time: datetime, action_name: str = "click"):
         last_log_time = None
         last_log_hour = None
         while True:
-            remaining = (target_time - datetime.now()).total_seconds()
+            remaining = seconds_until(target_time)
             if remaining <= 0.1:
                 break
 
@@ -177,14 +177,14 @@ def _wait_and_click(element, target_time: datetime, action_name: str = "click"):
                 time.sleep(sleep_time)
 
         # Busy-wait (spin loop) for precise timing in the final milliseconds
-        while datetime.now() < target_time:
+        while seconds_until(target_time) > 0:
             pass
 
     # Use JavaScript click for faster execution
     element.evaluate("el => el.click()")
 
-    click_time = datetime.now()
-    diff_ms = (click_time - target_time).total_seconds() * 1000
+    click_time = now_eastern()
+    diff_ms = -seconds_until(target_time) * 1000
     log.info(f"CLICKED at {click_time.strftime('%H:%M:%S.%f')[:-3]} (diff: {diff_ms:+.1f}ms)")
 
 
@@ -192,7 +192,7 @@ def _wait_and_reload(page, target_time: datetime):
     """Wait until target time and reload the page at that moment."""
     log.info("Preparing to refresh page at designated time...")
 
-    delay = (target_time - datetime.now()).total_seconds()
+    delay = seconds_until(target_time)
     if delay < 0:
         log.warning("Target time already passed, skipping refresh")
         return
@@ -205,7 +205,7 @@ def _wait_and_reload(page, target_time: datetime):
     last_log_time = None
     last_log_hour = None
     while True:
-        remaining = (target_time - datetime.now()).total_seconds()
+        remaining = seconds_until(target_time)
         if remaining <= 0.1:
             break
 
@@ -242,12 +242,12 @@ def _wait_and_reload(page, target_time: datetime):
         if sleep_time > 0:
             time.sleep(sleep_time)
 
-    while datetime.now() < target_time:
+    while seconds_until(target_time) > 0:
         pass
 
     page.reload(wait_until="domcontentloaded")
-    click_time = datetime.now()
-    diff_ms = (click_time - target_time).total_seconds() * 1000
+    click_time = now_eastern()
+    diff_ms = -seconds_until(target_time) * 1000
     log.info(f"REFRESHED at {click_time.strftime('%H:%M:%S.%f')[:-3]} (diff: {diff_ms:+.1f}ms)")
 
 
@@ -587,7 +587,7 @@ def main(
         # Default to at least 10 minutes; add 5 minutes buffer after the target time if known.
         join_timeout_seconds = 600
         if base_register_dt:
-            remaining = (base_register_dt - datetime.now()).total_seconds()
+            remaining = seconds_until(base_register_dt)
             if remaining > 0:
                 join_timeout_seconds = max(join_timeout_seconds, remaining + 300)
 
