@@ -4,11 +4,18 @@ from datetime import datetime, timedelta
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from constants import get_page, BASE_URL, ORG_ID, SCHEDULE_ID, MAX_DAYS_AHEAD
+from constants import get_page, BASE_URL, ORG_ID, SCHEDULE_ID, MAX_DAYS_AHEAD, LOCAL_TZ
 from utils.exceptions import DateSelectionError
 from utils.scheduler import close_date_picker
 
 log = logging.getLogger(__name__)
+
+
+def _today_eastern() -> datetime:
+    """Midnight of today's Eastern date, as a naive datetime."""
+    # The booking window follows the Eastern calendar, and the host timezone can differ.
+    # The result stays naive because callers compare it with naive datetimes.
+    return datetime.now(LOCAL_TZ).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
 
 
 def parse_booking_date(value: str | None) -> datetime:
@@ -28,7 +35,7 @@ def parse_booking_date(value: str | None) -> datetime:
     Raises:
         DateSelectionError: If date is invalid or more than MAX_DAYS_AHEAD days ahead.
     """
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today = _today_eastern()
     max_date = today + timedelta(days=MAX_DAYS_AHEAD)
 
     if value is None or value.lower() == "latest":
@@ -167,7 +174,7 @@ def select_booking_date(date: str | datetime | None = None):
     else:
         target_date = date
 
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today = _today_eastern()
     days_ahead = (target_date - today).days
 
     # Create friendly label
