@@ -15,6 +15,16 @@ BACKEND_URL = "https://backend.courtreserve.com"
 # Facility timezone. Booking windows and poll send times are computed in it.
 LOCAL_TZ = ZoneInfo("America/New_York")
 
+
+def now_eastern() -> datetime:
+    """The current time as an aware Eastern datetime, whatever timezone the host runs in."""
+    return datetime.now(LOCAL_TZ)
+
+
+def as_eastern(dt: datetime) -> datetime:
+    """Read a naive datetime as Eastern wall-clock time. An aware datetime passes through."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=LOCAL_TZ)
+
 # Organization-specific IDs
 ORG_ID = "8449"
 SCHEDULE_ID = "32125"

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from constants import get_page, BASE_URL, ORG_ID, SCHEDULE_ID, MAX_DAYS_AHEAD, LOCAL_TZ
+from constants import get_page, BASE_URL, ORG_ID, SCHEDULE_ID, MAX_DAYS_AHEAD, now_eastern
 from utils.exceptions import DateSelectionError
 from utils.scheduler import close_date_picker
 
@@ -15,7 +15,7 @@ def _today_eastern() -> datetime:
     """Midnight of today's Eastern date, as a naive datetime."""
     # The booking window follows the Eastern calendar, and the host timezone can differ.
     # The result stays naive because callers compare it with naive datetimes.
-    return datetime.now(LOCAL_TZ).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+    return now_eastern().replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
 
 
 def parse_booking_date(value: str | None) -> datetime:
