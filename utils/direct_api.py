@@ -24,6 +24,9 @@ from typing import Callable
 
 import httpx
 
+from constants import as_eastern, now_eastern
+from utils.wait import seconds_until
+
 log = logging.getLogger(__name__)
 
 # Suppress httpx's built-in request/response logging
@@ -283,6 +286,8 @@ def fire_parallel_bookings(
 
     Returns list of result dicts.
     """
+    # Fire times are Eastern wall-clock moments, and the host timezone can differ.
+    target_time = as_eastern(target_time)
     if fire_offsets_ms is None:
         fire_offsets_ms = [-1000, -750, -500, -250, 0]
     fire_offsets_ms = sorted(fire_offsets_ms)
@@ -450,7 +455,7 @@ def fire_parallel_bookings(
     try:
         # Wait until the first configured offset.
         first_fire_time = target_time + timedelta(milliseconds=fire_offsets_ms[0])
-        delay = (first_fire_time - datetime.now()).total_seconds()
+        delay = seconds_until(first_fire_time)
         if delay > 0:
             hours = int(delay // 3600)
             minutes = int((delay % 3600) // 60)
@@ -475,9 +480,9 @@ def fire_parallel_bookings(
                 if probe_client is None:
                     return
 
-                remaining_to_fire = (first_fire_time - datetime.now()).total_seconds()
+                remaining_to_fire = seconds_until(first_fire_time)
                 timeout_s = min(10, max(1, remaining_to_fire - 5))
-                started_dt = datetime.now()
+                started_dt = now_eastern()
                 send_offset_s = (started_dt - target_time).total_seconds()
                 try:
                     ps = time.time()
@@ -516,7 +521,7 @@ def fire_parallel_bookings(
 
             last_log = None
             while True:
-                now = datetime.now()
+                now = now_eastern()
                 remaining = (first_fire_time - now).total_seconds()
                 if remaining <= 0.05:
                     break
@@ -528,7 +533,7 @@ def fire_parallel_bookings(
                     if (now - probe["time"]).total_seconds() > 5:
                         continue
                     _run_latency_probe(probe["offset_s"])
-                    now = datetime.now()
+                    now = now_eastern()
                     remaining = (first_fire_time - now).total_seconds()
 
                 # Solve CAPTCHA at ~T-90s
@@ -624,7 +629,7 @@ def fire_parallel_bookings(
                     "client_idx": client_idx, "cf_ray": "", "cancelled": True,
                 }
 
-            send_dt = datetime.now()
+            send_dt = now_eastern()
             send_offset_ms = (send_dt - target_time).total_seconds() * 1000
             start = time.time()
             try:
@@ -633,7 +638,7 @@ def fire_parallel_bookings(
                     content=encoded_payload,
                     headers=post_headers,
                 )
-                response_dt = datetime.now()
+                response_dt = now_eastern()
                 elapsed_ms = (time.time() - start) * 1000
                 response_offset_ms = (response_dt - target_time).total_seconds() * 1000
 
@@ -681,7 +686,7 @@ def fire_parallel_bookings(
                     "detection_headers": detection_headers,
                 }
             except Exception as e:
-                response_dt = datetime.now()
+                response_dt = now_eastern()
                 return {
                     "success": False, "court": court_name, "court_short": court_short,
                     "response_status": 0, "response_text": str(e),
@@ -695,9 +700,7 @@ def fire_parallel_bookings(
 
         def _wait_until(planned_time: datetime):
             """Busy-wait to a precise wall-clock time using perf_counter."""
-            anchor_wall = datetime.now()
-            anchor_pc = time.perf_counter()
-            fire_pc = anchor_pc + (planned_time - anchor_wall).total_seconds()
+            fire_pc = time.perf_counter() + seconds_until(planned_time)
             while time.perf_counter() < fire_pc:
                 pass
 
@@ -719,14 +722,14 @@ def fire_parallel_bookings(
                 planned_fire = target_time + timedelta(milliseconds=cfg["offset_ms"])
                 if cfg["repeat_idx"] > 0:
                     time.sleep(micro_stagger_ms / 1000.0)
-                elif planned_fire > datetime.now():
+                elif planned_fire > now_eastern():
                     _wait_until(planned_fire)
 
                 if success_event.is_set():
                     log.info("  Success observed while waiting; skipping remaining scheduled offsets")
                     break
 
-                fire_actual = datetime.now()
+                fire_actual = now_eastern()
                 actual_offset = (fire_actual - target_time).total_seconds() * 1000
                 diff_from_plan = actual_offset - cfg["offset_ms"]
                 log.info(
