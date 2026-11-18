@@ -114,6 +114,8 @@ def match_reservation(page: Page, day: date, court: str) -> str | None:
     hits = [rid for text, rid in cards if when in text and court_re.search(text)]
     if len(hits) > 1:
         log.warning(f"  {len(hits)} reservations for {court} on {day}, using the first")
+    if not hits:
+        log.info(f"  No card for {court} on {when} among {len(cards)} bookings")
     return hits[0] if hits else None
 
 

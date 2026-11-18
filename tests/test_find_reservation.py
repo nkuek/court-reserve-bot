@@ -61,7 +61,9 @@ class MatchReservationTest(unittest.TestCase):
 
     def test_none_when_no_card_has_that_court_on_that_day(self):
         html = bookings(TONIGHT, NEXT_WEEK)
-        self.assertIsNone(self.match(html, date(2026, 11, 18), "8B"))
+        with self.assertLogs("utils.cr_roster", "INFO") as logs:
+            self.assertIsNone(self.match(html, date(2026, 11, 18), "8B"))
+        self.assertIn("No card for 8B on Wed, Nov 18th among 2 bookings", logs.output[0])
         self.assertIsNone(self.match(html, date(2026, 11, 23), "6A"))
 
     def test_court_must_match_whole(self):
