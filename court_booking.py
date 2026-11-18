@@ -27,11 +27,11 @@ from constants import (
     SLOT_BUTTON, ERROR_TOAST,
     get_page, get_context, close_browser, COURTS, VALID_DURATIONS,
     FACILITY_CLOSING_HOUR, FACILITY_CLOSING_MINUTE, set_trace_label,
-    BASE_URL, ORG_ID, SCHEDULE_ID, RESERVATIONS_URL, MAX_DAYS_AHEAD,
+    BASE_URL, ORG_ID, SCHEDULE_ID, RESERVATIONS_URL, MAX_DAYS_AHEAD, now_eastern,
 )
 from utils.login import login
 from utils.scheduler import reveal
-from utils.booking_date import select_booking_date, parse_booking_date
+from utils.booking_date import select_booking_date, parse_booking_date, booking_opens_at
 from utils.direct_api import (
     extract_booking_tokens, extract_cookies_from_context,
     fire_parallel_bookings, COURT_IDS,
@@ -39,7 +39,7 @@ from utils.direct_api import (
 from utils.discord import notify_success, notify_failure, notify_start
 from utils.whatsapp import queue_booking_post
 from utils.exceptions import CourtUnavailableError
-from utils.wait import wait_until, parse_wait_time
+from utils.wait import wait_until, parse_wait_time, seconds_until
 
 
 # Load .env from the same directory as this script
@@ -309,7 +309,7 @@ def click_save_button(target_time: datetime) -> bool:
     save_button = confirm_button(page)
     save_button.wait_for(timeout=10000)
 
-    delay = (target_time - datetime.now()).total_seconds()
+    delay = seconds_until(target_time)
 
     if delay < 0:
         log.warning("Target time already passed, clicking Save immediately")
@@ -325,14 +325,13 @@ def click_save_button(target_time: datetime) -> bool:
         # Log countdown every 30 seconds (or every second if < 30s remaining)
         last_log_time = None
         while True:
-            now = datetime.now()
-            remaining = (early_click_time - now).total_seconds()
+            remaining = seconds_until(early_click_time)
 
             # Break when we're within 50ms of click time (switch to busy-wait)
             if remaining <= 0.05:
                 break
 
-            remaining_to_target = (target_time - now).total_seconds()
+            remaining_to_target = seconds_until(target_time)
             hours = int(remaining_to_target // 3600)
             minutes = int((remaining_to_target % 3600) // 60)
             seconds = int(remaining_to_target % 60)
@@ -355,14 +354,14 @@ def click_save_button(target_time: datetime) -> bool:
                 time.sleep(sleep_time)
 
         # Final busy-wait (spin loop) for precise timing
-        while datetime.now() < early_click_time:
+        while seconds_until(early_click_time) > 0:
             pass
 
     # Use JavaScript click for faster execution
     save_button.evaluate("el => el.click()")
 
-    click_time = datetime.now()
-    diff_from_target_ms = (click_time - target_time).total_seconds() * 1000
+    click_time = now_eastern()
+    diff_from_target_ms = -seconds_until(target_time) * 1000
     log.info(f"CLICKED Save button at {click_time.strftime('%H:%M:%S.%f')[:-3]} ({diff_from_target_ms:+.1f}ms from target, intended -2000ms)")
 
     # Wait for the booking result - either modal closes (success) or error alert appears
@@ -633,20 +632,19 @@ def _click_save_at_time(click_time: datetime) -> bool:
     save_button.wait_for(timeout=10000)
 
     # Wait until click time
-    now = datetime.now()
-    if click_time > now:
+    if seconds_until(click_time) > 0:
         # Sleep until close to click time
-        sleep_duration = (click_time - now).total_seconds() - 0.05
+        sleep_duration = seconds_until(click_time) - 0.05
         if sleep_duration > 0:
             time.sleep(sleep_duration)
         # Busy-wait for final precision
-        while datetime.now() < click_time:
+        while seconds_until(click_time) > 0:
             pass
 
     # Click
     save_button.evaluate("el => el.click()")
-    actual_click = datetime.now()
-    diff_ms = (actual_click - click_time).total_seconds() * 1000
+    actual_click = now_eastern()
+    diff_ms = -seconds_until(click_time) * 1000
     log = logging.getLogger(__name__)
     log.info(f"CLICKED at {actual_click.strftime('%H:%M:%S.%f')[:-3]} (diff: {diff_ms:+.1f}ms)")
 
@@ -732,7 +730,7 @@ def _run_parallel_booking(
 
     # Wait for all processes to complete
     # Timeout must account for: setup (~15s) + sleep until click time + result polling (30s) + buffer (30s)
-    seconds_until_click = max(0, (target_time - datetime.now()).total_seconds())
+    seconds_until_click = max(0, seconds_until(target_time))
     timeout = int(seconds_until_click + 90)  # click wait + 60s for setup/polling + 30s buffer
     log.info(f"  Process timeout: {timeout}s ({seconds_until_click:.0f}s until click + 90s buffer)")
 
@@ -945,10 +943,10 @@ def main(
 
     # A slot opens exactly MAX_DAYS_AHEAD days before it starts. When that moment has
     # passed, the slot is already open, so fire shortly after now instead of waiting.
-    opens_at = booking_date.replace(hour=hour, minute=minute, second=0, microsecond=0) - timedelta(days=MAX_DAYS_AHEAD)
-    already_open = opens_at <= datetime.now()
+    opens_at = booking_opens_at(booking_date, hour, minute)
+    already_open = seconds_until(opens_at) <= 0
     target_click_time = (
-        datetime.now().replace(microsecond=0) + timedelta(seconds=3) if already_open else opens_at
+        now_eastern().replace(microsecond=0) + timedelta(seconds=3) if already_open else opens_at
     )
 
     # Parse wait time if provided (validate early, but wait later after login)
@@ -962,7 +960,7 @@ def main(
         else:
             # Default: wait until 2 minutes before target time
             default_wait_target = target_click_time - timedelta(minutes=2)
-            if default_wait_target > datetime.now():
+            if seconds_until(default_wait_target) > 0:
                 wait_target = default_wait_target
 
     # Check if reservation would exceed closing time
@@ -1002,7 +1000,7 @@ def main(
 
     def fire_target() -> datetime:
         # Login and token setup take a while, so an open slot gets a fresh target at fire time.
-        return datetime.now() + timedelta(seconds=3) if already_open else target
+        return now_eastern() + timedelta(seconds=3) if already_open else target
     reservation_time = to_12_hour(time_str)
 
     # Compute actual end time for logging
