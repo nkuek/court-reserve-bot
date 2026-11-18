@@ -44,21 +44,62 @@ class PlayingButton(
         return cls(match["play"], match["day"], match["court"])
 
     async def callback(self, interaction: discord.Interaction):
-        playing = self.play == "in"
+        if self.play == "out":
+            # A stray tap once removed the booker from a session, so removal waits for a second tap.
+            await interaction.response.edit_message(
+                content=f"Take yourself off the sign-up list for {_when(self.day)}?", view=leave_view(self.day, self.court)
+            )
+            return
         try:
-            await asyncio.to_thread(signup_app.set_booker_playing, self.day, playing, self.court)
-            others = [] if playing else await asyncio.to_thread(_others, self.day, self.court)
+            await asyncio.to_thread(signup_app.set_booker_playing, self.day, True, self.court)
         except Exception as e:
             log.warning(f"Could not update the booker for {self.day}: {e}")
             await interaction.response.send_message(f"Couldn't update the sign-up app: {e}")
             return
-        log.info(f"Booker {'playing' if playing else 'out'} for {self.day}")
-        if playing:
-            await interaction.response.edit_message(
-                content=f"You're playing {_when(self.day)}. You're on the sign-up list.", view=prompt_view(self.day, self.court)
+        log.info(f"Booker playing for {self.day}")
+        await interaction.response.edit_message(
+            content=f"You're playing {_when(self.day)}. You're on the sign-up list.", view=prompt_view(self.day, self.court)
+        )
+
+
+class LeaveButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"leave:(?P<answer>yes|no):(?P<day>\d{4}-\d{2}-\d{2}):(?P<court>[0-9A-Za-z]+)",
+):
+    def __init__(self, answer: str, day: str, court: str):
+        self.answer, self.day, self.court = answer, day, court
+        super().__init__(
+            discord.ui.Button(
+                label="Yes, I can't play" if answer == "yes" else "Back",
+                style=discord.ButtonStyle.danger if answer == "yes" else discord.ButtonStyle.secondary,
+                custom_id=f"leave:{answer}:{day}:{court}",
             )
-        else:
-            await interaction.response.edit_message(content=_out_text(self.day, self.court, others), view=prompt_view(self.day, self.court, others, menu=True))
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Button, match):
+        return cls(match["answer"], match["day"], match["court"])
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.answer == "no":
+            await interaction.response.edit_message(content=f"Okay, you're still on the list for {_when(self.day)}.", view=prompt_view(self.day, self.court))
+            return
+        try:
+            await asyncio.to_thread(signup_app.set_booker_playing, self.day, False, self.court)
+            others = await asyncio.to_thread(_others, self.day, self.court)
+        except Exception as e:
+            log.warning(f"Could not update the booker for {self.day}: {e}")
+            await interaction.response.send_message(f"Couldn't update the sign-up app: {e}")
+            return
+        log.info(f"Booker out for {self.day}")
+        await interaction.response.edit_message(content=_out_text(self.day, self.court, others), view=prompt_view(self.day, self.court, others, menu=True))
+
+
+def leave_view(day: str, court: str) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(LeaveButton("yes", day, court))
+    view.add_item(LeaveButton("no", day, court))
+    return view
 
 
 def _out_text(day: str, court: str, others: list[dict]) -> str:
