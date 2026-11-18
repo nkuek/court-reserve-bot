@@ -1,0 +1,2 @@
+# The tests drive a real Chromium through Playwright, which only the project venv has.
+/Users/nick/projects/court-reserve-bot/.venv/bin/python -m unittest discover -s tests -t .
