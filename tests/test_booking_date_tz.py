@@ -7,9 +7,10 @@ from datetime import datetime, timedelta
 from unittest import mock
 
 # The date logic needs no browser. Stubs let the test run where Playwright is not installed.
-for name in ("playwright", "playwright.sync_api", "playwright_stealth"):
-    if importlib.util.find_spec(name.split(".")[0]) is None:
+for name in ("playwright", "playwright_stealth"):
+    if importlib.util.find_spec(name) is None:
         sys.modules[name] = mock.MagicMock()
+        sys.modules[f"{name}.sync_api"] = mock.MagicMock()
 
 from constants import LOCAL_TZ, MAX_DAYS_AHEAD
 from utils import booking_date
