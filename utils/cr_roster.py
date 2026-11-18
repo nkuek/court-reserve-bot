@@ -91,11 +91,24 @@ def find_reservation(page: Page, day: date, court: str) -> str | None:
     page.goto(LIST_URL)
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(2000)
+    return match_reservation(page, day, court)
+
+
+def match_reservation(page: Page, day: date, court: str) -> str | None:
+    """The reservation id for a court on a day, from the My Bookings page already open."""
     # Cards read like "Mon, Oct 5th, 8:00 PM - 11:00 PM ... Pickleball Court #8A (Bubble B)".
+    # Only the card's class carries the reservation id, as booking-card-desktop-<id>.
     cards = page.eval_on_selector_all(
-        "[data-testid^=booking-card-wrapper-]",
-        "els => els.map(e => [e.innerText, e.dataset.testid.replace('booking-card-wrapper-', '')])",
+        "[class*=booking-card-desktop-]",
+        r"""els => els.flatMap(e => {
+            const id = [...e.classList].map(c => c.match(/^booking-card-desktop-(\d+)$/)).find(Boolean);
+            return id ? [[e.innerText, id[1]]] : [];
+        })""",
     )
+    found = re.search(r"(\d+) Bookings? Found", page.inner_text("body"))
+    if not cards and found and int(found[1]):
+        # A markup change otherwise reads as "no reservation", which roster sync never retries.
+        raise RuntimeError(f"My Bookings lists {found[1]} bookings, but no booking card could be read")
     when = f"{day:%a}, {day:%b} {_ordinal(day.day)}"
     court_re = re.compile(rf"Court #?{re.escape(court)}\b")
     hits = [rid for text, rid in cards if when in text and court_re.search(text)]
