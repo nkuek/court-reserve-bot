@@ -2,9 +2,21 @@
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+
+from constants import as_eastern, now_eastern
 
 log = logging.getLogger(__name__)
+
+
+def seconds_until(target: datetime) -> float:
+    """
+    Real seconds from now to the target. A naive target reads as Eastern.
+
+    Compares instants, not wall clocks, because Python subtracts two datetimes
+    that share a zone as wall clock times and ignores a DST change between them.
+    """
+    return as_eastern(target).timestamp() - now_eastern().timestamp()
 
 
 def wait_until(target_time: datetime) -> None:
@@ -14,7 +26,7 @@ def wait_until(target_time: datetime) -> None:
     Displays a countdown with updates every 30 seconds,
     and every second in the final 10 seconds.
     """
-    delay = (target_time - datetime.now()).total_seconds()
+    delay = seconds_until(target_time)
 
     if delay <= 0:
         log.info("Target time already reached, continuing immediately")
@@ -31,7 +43,7 @@ def wait_until(target_time: datetime) -> None:
 
     last_log_time = None
     while True:
-        remaining = (target_time - datetime.now()).total_seconds()
+        remaining = seconds_until(target_time)
         if remaining <= 0:
             break
 
@@ -75,9 +87,7 @@ def parse_wait_time(value: str) -> datetime:
     Returns:
         datetime: The target time to wait until.
     """
-    from datetime import timedelta
-
-    now = datetime.now()
+    now = now_eastern()
     value = value.strip()
 
     # Handle "tomorrow HH:MM" format
@@ -106,9 +116,9 @@ def parse_wait_time(value: str) -> datetime:
     if " " in value and "-" in value.split(" ")[0]:
         try:
             if value.count(":") == 1:
-                target = datetime.strptime(value, "%Y-%m-%d %H:%M")
+                target = as_eastern(datetime.strptime(value, "%Y-%m-%d %H:%M"))
             else:
-                target = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+                target = as_eastern(datetime.strptime(value, "%Y-%m-%d %H:%M:%S"))
 
             if target <= now:
                 raise ValueError(

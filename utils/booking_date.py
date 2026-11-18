@@ -1,10 +1,10 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from constants import get_page, BASE_URL, ORG_ID, SCHEDULE_ID, MAX_DAYS_AHEAD, now_eastern
+from constants import get_page, BASE_URL, ORG_ID, SCHEDULE_ID, MAX_DAYS_AHEAD, LOCAL_TZ, now_eastern
 from utils.exceptions import DateSelectionError
 from utils.scheduler import close_date_picker
 
@@ -16,6 +16,13 @@ def _today_eastern() -> datetime:
     # The booking window follows the Eastern calendar, and the host timezone can differ.
     # The result stays naive because callers compare it with naive datetimes.
     return now_eastern().replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+
+
+def booking_opens_at(booking_date: datetime, hour: int, minute: int) -> datetime:
+    """The aware Eastern moment a slot starting at hour:minute on booking_date opens."""
+    # Subtracting days keeps the same Eastern wall time across a DST change.
+    start = datetime.combine(booking_date.date(), time(hour, minute), tzinfo=LOCAL_TZ)
+    return start - timedelta(days=MAX_DAYS_AHEAD)
 
 
 def parse_booking_date(value: str | None) -> datetime:
