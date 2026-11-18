@@ -115,7 +115,7 @@ def _open_date_picker(page):
 
 def _attempt_date_selection(page, target_date: datetime):
     """
-    One full attempt: open the picker, click the day cell, confirm the label.
+    One full attempt: open the picker, click the day cell, confirm the shown day.
 
     Raises on any failure so the caller can retry from a freshly loaded page.
     """
