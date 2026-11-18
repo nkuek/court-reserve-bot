@@ -82,7 +82,7 @@ class LeaveButton(
 
     async def callback(self, interaction: discord.Interaction):
         if self.answer == "no":
-            await interaction.response.edit_message(content=f"Okay, you're still on the list for {_when(self.day)}.", view=prompt_view(self.day, self.court))
+            await interaction.response.edit_message(content=f"Nothing changed for {_when(self.day)}.", view=prompt_view(self.day, self.court))
             return
         try:
             await asyncio.to_thread(signup_app.set_booker_playing, self.day, False, self.court)
