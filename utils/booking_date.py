@@ -91,7 +91,11 @@ def parse_booking_date(value: str | None) -> datetime:
 # never recover, so retrying from a fresh page is strictly better than waiting.
 MAX_DATE_SELECT_ATTEMPTS = 3
 
-DATE_LABEL = '[data-testid="scheduler-date-label"]'
+# The picker input holds the shown day as MM/DD/YYYY.
+DATE_INPUT = '[data-testid="scheduler-date-picker"]'
+# The input sits in a zero-size wrapper, and the court header above the grid intercepts clicks on it.
+# The visible day label beside it opens the same calendar.
+DATE_LABEL = f'div:has(> div > .ant-picker {DATE_INPUT}) > span'
 
 
 def _open_date_picker(page):
@@ -129,12 +133,12 @@ def _attempt_date_selection(page, target_date: datetime):
         )
     cell.click(timeout=5000)
 
-    # The label above the scheduler is the page's own record of the shown day. Proceeding on
-    # the wrong day would book the wrong day.
-    expected = f"{target_date.strftime('%A, %B')} {target_date.day}"
+    # The picker input is the page's own record of the shown day. Proceeding on the wrong day
+    # would book the wrong day.
+    expected = target_date.strftime("%m/%d/%Y")
     page.wait_for_function(
-        """([sel, text]) => document.querySelector(sel)?.textContent.trim().endsWith(text)""",
-        arg=[DATE_LABEL, expected],
+        """([sel, text]) => document.querySelector(sel)?.value === text""",
+        arg=[DATE_INPUT, expected],
         timeout=10000,
     )
     close_date_picker(page)
@@ -199,7 +203,8 @@ def select_booking_date(date: str | datetime | None = None):
             if attempt < MAX_DATE_SELECT_ATTEMPTS:
                 log.warning(
                     f"Date selection attempt {attempt} failed "
-                    f"({e.__class__.__name__}); reloading and retrying"
+                    f"({e.__class__.__name__}: {str(e).splitlines()[0] if str(e) else ''}); "
+                    f"reloading and retrying"
                 )
 
     if days_ahead == MAX_DAYS_AHEAD:
