@@ -32,6 +32,7 @@ from constants import (
 from utils.login import login
 from utils.scheduler import reveal
 from utils.booking_date import select_booking_date, parse_booking_date, booking_opens_at
+from utils.debug_snapshot import save_debug_snapshot
 from utils.direct_api import (
     extract_booking_tokens, extract_cookies_from_context,
     fire_parallel_bookings, COURT_IDS,
@@ -251,53 +252,6 @@ def add_duration(duration_hours: float) -> float:
     return actual_duration
 
 
-def _save_debug_snapshot(suffix: str):
-    """Save screenshot and HTML for debugging (only in headless mode or if DEBUG_SNAPSHOTS is set)."""
-    # Skip if tracing is enabled - traces already capture screenshots and DOM
-    if os.environ.get("ENABLE_TRACING", "false").lower() == "true":
-        return None, None
-
-    if not (os.environ.get("HEADLESS", "false").lower() == "true" or os.environ.get("DEBUG_SNAPSHOTS")):
-        return None, None
-
-    page = get_page()
-    debug_dir = Path(__file__).parent / "data" / "debug"
-    debug_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    # Save screenshot
-    screenshot_path = debug_dir / f"{timestamp}_{suffix}.png"
-    try:
-        page.screenshot(path=screenshot_path)
-        log.info(f"  Screenshot saved: {screenshot_path}")
-    except Exception as e:
-        log.warning(f"  Failed to save screenshot: {e}")
-        screenshot_path = None
-
-    # Save HTML
-    html_path = debug_dir / f"{timestamp}_{suffix}.html"
-    try:
-        html_content = page.content()
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
-        log.info(f"  HTML saved: {html_path}")
-    except Exception as e:
-        log.warning(f"  Failed to save HTML: {e}")
-        html_path = None
-
-    # Clean up old debug files (keep last 20 of each type)
-    for ext in ["*.png", "*.html"]:
-        files = sorted(debug_dir.glob(ext), key=os.path.getmtime)
-        for old_file in files[:-20]:
-            try:
-                os.remove(old_file)
-            except Exception:
-                pass
-
-    return screenshot_path, html_path
-
-
 def click_save_button(target_time: datetime) -> bool:
     """Wait until target time and click the save button with high precision.
 
@@ -380,19 +334,19 @@ def click_save_button(target_time: datetime) -> bool:
         # Check if error alert appeared
         if error_alert.count() > 0:
             log.warning("Error alert detected - booking failed")
-            _save_debug_snapshot("after_save")
+            save_debug_snapshot("after_save")
             return False
 
         # Check if booking form title is gone (modal closed = success)
         try:
             if booking_form_title.count() == 0 or not booking_form_title.is_visible():
                 log.info("Booking modal closed - booking appears successful")
-                _save_debug_snapshot("after_save")
+                save_debug_snapshot("after_save")
                 return True
         except Exception:
             # Element detached = modal closed
             log.info("Booking modal closed - booking appears successful")
-            _save_debug_snapshot("after_save")
+            save_debug_snapshot("after_save")
             return True
 
         # Check if save button is no longer disabled (form submitted successfully)
@@ -405,12 +359,12 @@ def click_save_button(target_time: datetime) -> bool:
                 page.wait_for_timeout(100)
                 if error_alert.count() > 0:
                     log.warning("Error alert appeared after submission")
-                    _save_debug_snapshot("after_save")
+                    save_debug_snapshot("after_save")
                     return False
                 # Check if modal closed
                 if booking_form_title.count() == 0 or not booking_form_title.is_visible():
                     log.info("Save button reset and modal closed - booking successful")
-                    _save_debug_snapshot("after_save")
+                    save_debug_snapshot("after_save")
                     return True
         except Exception:
             # Button might be detached if modal closed
@@ -420,7 +374,7 @@ def click_save_button(target_time: datetime) -> bool:
 
     # Timeout - couldn't determine result
     log.warning(f"Timeout after {max_wait_seconds}s waiting for booking result")
-    _save_debug_snapshot("after_save")
+    save_debug_snapshot("after_save")
 
     # Final check
     if error_alert.count() > 0:
@@ -1404,7 +1358,7 @@ def main(
                 )
 
                 # Save debug snapshot of the error state
-                _save_debug_snapshot(f"error_alert_{court_name.replace(' ', '_')}")
+                save_debug_snapshot(f"error_alert_{court_name.replace(' ', '_')}")
 
                 # The error toast leaves the modal open. Close it before the next court.
                 close_reservation_modal(page)
@@ -1413,7 +1367,7 @@ def main(
                 continue
 
             # Save success snapshot
-            _save_debug_snapshot(f"success_{court_name.replace(' ', '_')}")
+            save_debug_snapshot(f"success_{court_name.replace(' ', '_')}")
 
             log.info("=" * 50)
             log.info(f"SUCCESS! Reservation saved on court: {court_name}")
@@ -1436,7 +1390,7 @@ def main(
         log.error("=" * 50)
 
         # Save final state for debugging
-        _save_debug_snapshot("booking_failed_all_courts")
+        save_debug_snapshot("booking_failed_all_courts")
 
         if court:
             # User specified a specific court
@@ -1476,7 +1430,7 @@ def run():
 
         # Try to save debug snapshot before closing
         try:
-            _save_debug_snapshot(f"exception_{error_type}")
+            save_debug_snapshot(f"exception_{error_type}")
         except Exception:
             pass
 

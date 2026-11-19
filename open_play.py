@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from constants import get_page, close_browser, SLOT_BUTTON, ERROR_TOAST, now_eastern
 from utils.login import login
 from utils.booking_date import select_booking_date, parse_booking_date
+from utils.debug_snapshot import save_debug_snapshot
 from utils.discord import notify_open_play_success, notify_failure, notify_start
 from utils.scheduler import reveal
 from utils.wait import wait_until, parse_wait_time, seconds_until
@@ -40,53 +41,6 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 app = typer.Typer(help="Register for Open Play events on CourtReserve.")
-
-
-def _save_debug_snapshot(suffix: str):
-    """Save screenshot and HTML for debugging (only in headless mode or if DEBUG_SNAPSHOTS is set)."""
-    # Skip if tracing is enabled - traces already capture screenshots and DOM
-    if os.environ.get("ENABLE_TRACING", "false").lower() == "true":
-        return None, None
-
-    if not (os.environ.get("HEADLESS", "false").lower() == "true" or os.environ.get("DEBUG_SNAPSHOTS")):
-        return None, None
-
-    page = get_page()
-    debug_dir = Path(__file__).parent / "data" / "debug"
-    debug_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    # Save screenshot
-    screenshot_path = debug_dir / f"openplay_{timestamp}_{suffix}.png"
-    try:
-        page.screenshot(path=screenshot_path)
-        log.info(f"  Screenshot saved: {screenshot_path}")
-    except Exception as e:
-        log.warning(f"  Failed to save screenshot: {e}")
-        screenshot_path = None
-
-    # Save HTML
-    html_path = debug_dir / f"openplay_{timestamp}_{suffix}.html"
-    try:
-        html_content = page.content()
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
-        log.info(f"  HTML saved: {html_path}")
-    except Exception as e:
-        log.warning(f"  Failed to save HTML: {e}")
-        html_path = None
-
-    # Clean up old debug files (keep last 20 of each type)
-    for pattern in ["openplay_*.png", "openplay_*.html"]:
-        files = sorted(debug_dir.glob(pattern), key=os.path.getmtime)
-        for old_file in files[:-20]:
-            try:
-                os.remove(old_file)
-            except Exception:
-                pass
-
-    return screenshot_path, html_path
 
 
 def _wait_for_registration_result(page, max_wait_seconds: int = 60) -> bool:
@@ -340,7 +294,7 @@ def _run_once(
         details_link = event_card.first.get_by_text("Details", exact=True)
         details_link.wait_for(timeout=10000)
     except Exception as e:
-        _save_debug_snapshot("event_not_found")
+        save_debug_snapshot("event_not_found", prefix="openplay_")
         raise Exception(
             f"Could not find any Pickleball Open Play event on {booking_date_str}.\n"
             f"  Intermediate events are typically on Tuesdays, Thursday events on Thursdays.\n"
@@ -380,7 +334,7 @@ def _run_once(
         register_link = page.get_by_role("button", name="Register", exact=True)
         register_link.wait_for(timeout=10000)
     except Exception as e:
-        _save_debug_snapshot("register_link_not_found")
+        save_debug_snapshot("register_link_not_found", prefix="openplay_")
         raise Exception(
             f"Could not find 'Register' link for '{event_name}'.\n"
             f"  You may already be registered, or registration is not open.\n"
@@ -395,7 +349,7 @@ def _run_once(
         finalize_button = page.get_by_role("button", name="Finalize Registration")
         finalize_button.wait_for(timeout=10000)
     except Exception as e:
-        _save_debug_snapshot("finalize_button_not_found")
+        save_debug_snapshot("finalize_button_not_found", prefix="openplay_")
         raise Exception(
             f"Could not find 'Finalize Registration' button.\n"
             f"  The registration form may not have loaded correctly.\n"
@@ -418,7 +372,7 @@ def _run_once(
 
     # Save debug snapshot after finalize
     log.info("Saving debug snapshot after finalize...")
-    _save_debug_snapshot("after_finalize")
+    save_debug_snapshot("after_finalize", prefix="openplay_")
 
     if not registration_succeeded:
         raise Exception(
@@ -658,7 +612,7 @@ def run():
 
         # Try to save debug snapshot before closing
         try:
-            _save_debug_snapshot(f"exception_{error_type}")
+            save_debug_snapshot(f"exception_{error_type}", prefix="openplay_")
         except Exception:
             pass
 

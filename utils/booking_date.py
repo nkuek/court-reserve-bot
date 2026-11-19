@@ -4,8 +4,11 @@ from datetime import datetime, time, timedelta
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
+
 from constants import get_page, BASE_URL, ORG_ID, SCHEDULE_ID, MAX_DAYS_AHEAD, LOCAL_TZ, now_eastern
 from utils.exceptions import DateSelectionError
+from utils.debug_snapshot import save_debug_snapshot
 from utils.scheduler import close_date_picker
 
 log = logging.getLogger(__name__)
@@ -112,19 +115,30 @@ DATE_INPUT = '[data-testid="scheduler-date-picker"]'
 DATE_LABEL = f'div:has(> div > .ant-picker {DATE_INPUT}) > span'
 
 
+LABEL_TIMEOUT_MS = 15000
+DROPDOWN_TIMEOUT_MS = 5000
+
+
 def _open_date_picker(page):
     """Open the calendar popup by clicking the date label above the scheduler."""
+    label = page.locator(DATE_LABEL)
     try:
-        label = page.locator(DATE_LABEL)
-        label.wait_for(timeout=15000)
-        label.click()
-    except Exception as e:
+        label.wait_for(timeout=LABEL_TIMEOUT_MS)
+    except PlaywrightError as e:
+        # A strict-mode violation raises at once, so the counts tell a duplicate label from a missing one.
         raise DateSelectionError(
-            f"Could not find the date picker on the bookings page.\n"
+            f"Could not find the date picker: date picker label not found "
+            f"(label matches: {label.count()}, input matches: {page.locator(DATE_INPUT).count()}).\n"
             f"  The page may not have loaded correctly, or you may not be logged in.\n"
             f"  Original error: {e}"
         )
-    page.wait_for_selector(".ant-picker-dropdown:not(.ant-picker-dropdown-hidden)", timeout=5000)
+    label.click()
+    try:
+        page.wait_for_selector(
+            ".ant-picker-dropdown:not(.ant-picker-dropdown-hidden)", timeout=DROPDOWN_TIMEOUT_MS
+        )
+    except PlaywrightTimeoutError:
+        raise DateSelectionError("Could not find the date picker: date picker dropdown did not open.")
 
 
 def _attempt_date_selection(page, target_date: datetime):
@@ -221,6 +235,9 @@ def select_booking_date(date: str | datetime | None = None):
                     f"reloading and retrying"
                 )
 
+    # Bot runs set ENABLE_TRACING, and this snapshot still saves under it.
+    # A trace needs the trace viewer, while this HTML can be grepped and trimmed into a test fixture.
+    save_debug_snapshot("date_picker_failed", page=page, skip_when_tracing=False)
     if days_ahead == MAX_DAYS_AHEAD:
         hint = f"Bookings typically open {MAX_DAYS_AHEAD} days in advance at a specific time."
     else:
