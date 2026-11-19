@@ -125,7 +125,7 @@ def _open_date_picker(page):
     try:
         label.wait_for(timeout=LABEL_TIMEOUT_MS)
     except PlaywrightError as e:
-        # A strict-mode violation raises at once, so the counts tell a duplicate label from a missing one.
+        # A strict-mode violation raises at once. The counts tell a duplicate label from a missing one.
         raise DateSelectionError(
             f"Could not find the date picker: date picker label not found "
             f"(label matches: {label.count()}, input matches: {page.locator(DATE_INPUT).count()}).\n"

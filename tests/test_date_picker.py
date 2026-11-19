@@ -76,7 +76,9 @@ class DatePickerTest(unittest.TestCase):
         self.assertIsNotNone(importlib.util.find_spec("utils.debug_snapshot"))
         from utils import debug_snapshot
 
-        debug_dir = Path(tempfile.mkdtemp())
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        debug_dir = Path(tmp.name)
         self.page.route("**/*", lambda route: route.fulfill(body=INPUT_ONLY, content_type="text/html"))
         env = {"HEADLESS": "true", "ENABLE_TRACING": "true"}
         with mock.patch.object(booking_date, "get_page", return_value=self.page), \
