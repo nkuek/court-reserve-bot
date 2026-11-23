@@ -58,7 +58,8 @@ function confirmAdd(m) {
   d.style.cssText = 'position:fixed;top:300px;left:0;z-index:10;background:#fff';
   d.innerHTML = '<div role="dialog">Add player?<button type="button">Cancel</button><button type="button">Yes</button></div>';
   document.body.appendChild(d);
-  d.querySelectorAll('button')[1].onclick = () => { players.push(m); closePortal(); render(); };
+  // The confirm fades out after the row appears, as the real one animates closed.
+  d.querySelectorAll('button')[1].onclick = () => { players.push(m); render(); d.id = ''; setTimeout(() => d.remove(), 300); };
 }
 function search(q) {
   closePortal();
