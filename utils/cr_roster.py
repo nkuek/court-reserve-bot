@@ -283,12 +283,12 @@ def edit(page: Page, rid: str, remove_orgs: list[str], adds: dict[str, str]) -> 
     page.get_by_role("button", name="Edit Reservation").click()
     page.locator(EDIT_MODAL).wait_for(state="attached", timeout=20000)
     # Player rows carry no id. Each removable player's Remove button carries the org member id.
-    row = lambda org: page.locator(f"[data-testid=reservation-player-remove-o{org}]")
+    remove_button = lambda org: page.locator(f"[data-testid=reservation-player-remove-o{org}]")
     # The table renders after the modal opens.
     page.locator("[data-testid^=reservation-player-remove-]").first.wait_for(timeout=20000)
     for org in remove_orgs:
-        row(org).click()
-        row(org).wait_for(state="detached", timeout=10000)
+        remove_button(org).click()
+        remove_button(org).wait_for(state="detached", timeout=10000)
     search = page.get_by_placeholder("Search for other player(s) to play with")
     for org, name in adds.items():
         try:
@@ -297,7 +297,7 @@ def edit(page: Page, rid: str, remove_orgs: list[str], adds: dict[str, str]) -> 
             # Each add asks for confirmation before the row appears.
             yes = page.get_by_role("button", name="Yes")
             yes.click(timeout=ADD_TIMEOUT_MS)
-            row(org).wait_for(timeout=10000)
+            remove_button(org).wait_for(timeout=10000)
             # The confirm fades out after the row appears. The next add's confirm would otherwise show a second Yes.
             yes.first.wait_for(state="hidden", timeout=10000)
         except PlaywrightTimeoutError:
