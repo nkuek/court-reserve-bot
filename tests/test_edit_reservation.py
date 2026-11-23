@@ -152,5 +152,43 @@ class EditReservationTest(unittest.TestCase):
         self.assertEqual(error.message, "Lee Poe not allowed on this reservation")
         self.assertEqual(self.saved, [])
 
+# The mobile reservation page labels its Substitute buttons "Sub". The Substitute page tags each favorite with its org member id.
+MOBILE_PAGE = """
+<div><span>Placeholder #1</span><button type="button" onclick="location.href='/Online/MyProfile/SwapPlayers/8449?reservationId=1&orgMemberId=101'">Sub</button></div>
+"""
+SWAP_PAGE = """
+<div data-testid="swap-players-search"><input></div>
+<div data-testid="swap-players-fav-7221843">Pat Doe</div>
+<div data-testid="swap-players-fav-10270428">Sam Roe</div>
+<button type="button" data-testid="swap-players-confirm-btn">Confirm</button>
+"""
+
+
+class FavoritesTest(unittest.TestCase):
+    def test_reads_favorite_org_ids_from_the_mobile_substitute_page(self):
+        self.assertIsNotNone(importlib.util.find_spec("utils.cr_roster"))
+        from utils import cr_roster
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+
+            def context(**kw):
+                ctx = browser.new_context(**kw)
+                ctx.set_default_timeout(3000)
+                ctx.route("**/Online/MyProfile/Reservation/**", lambda r: r.fulfill(content_type="text/html", body=MOBILE_PAGE))
+                ctx.route("**/Online/MyProfile/SwapPlayers/**", lambda r: r.fulfill(content_type="text/html", body=SWAP_PAGE))
+                return ctx
+
+            fake = mock.Mock(new_context=context)
+            env = {"EMAIL": "bot@example.com", "PASSWORD": "x"}
+            with mock.patch.object(cr_roster, "get_browser", return_value=fake), \
+                    mock.patch.object(cr_roster, "_attempt_login"), mock.patch.dict("os.environ", env):
+                try:
+                    favs = cr_roster._favorites("1")
+                except Exception as e:
+                    favs = e
+            browser.close()
+        self.assertEqual(favs, {"7221843", "10270428"})
+
 if __name__ == "__main__":
     unittest.main()
