@@ -294,8 +294,11 @@ def edit(page: Page, rid: str, remove_orgs: list[str], adds: dict[str, str]) -> 
             search.fill(name)
             _option(page, org).click()
             # Each add asks for confirmation before the row appears.
-            page.get_by_role("button", name="Yes").click(timeout=ADD_TIMEOUT_MS)
+            yes = page.get_by_role("button", name="Yes")
+            yes.click(timeout=ADD_TIMEOUT_MS)
             row(org).wait_for(timeout=10000)
+            # The confirm fades out after the row appears. The next add's confirm would otherwise show a second Yes.
+            yes.first.wait_for(state="hidden", timeout=10000)
         except PlaywrightTimeoutError:
             # An ineligible player may be refused at add time with a toast. A timeout with no toast is a plain failure.
             toast = " ".join(page.locator("[role=alert], .ant-message, .ant-notification").all_inner_texts()).strip()
