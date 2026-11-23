@@ -23,8 +23,10 @@ SEARCH_URL = (
     "&isOpenReservation=false&organizationMemberIdsString=&userId={user}&filterValue={q}"
 )
 CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "cr_members.json"
-# The Edit Reservation button opens the same modal as Create Reservation.
-EDIT_MODAL = "[data-testid=reservation-create-page]"
+# The modal's root element has no box of its own. Waits on it use state="attached".
+EDIT_MODAL = "[data-testid=reservation-edit-modal]"
+# How long a searched member's option, and then its confirm button, may take to show.
+ADD_TIMEOUT_MS = 10000
 NOT_FOUND = "no CourtReserve member by that name"
 NO_NAME = "guest without a name"
 
@@ -162,7 +164,7 @@ def _favorites(rid: str) -> set[str]:
         page = ctx.new_page()
         _attempt_login(page, os.environ["EMAIL"], os.environ["PASSWORD"])
         _open(page, rid)
-        page.locator("[data-testid=btn-swap-name]").first.click()
+        page.get_by_role("button", name="Substitute").first.click()
         # The Substitute page lists favorites before any search. Each row's id is the org member id.
         page.locator("[data-testid^=swap-players-row-]").first.wait_for(timeout=15000)
         return set(page.eval_on_selector_all("[data-testid^=swap-players-row-]", "els => els.map(e => e.dataset.testid.replace('swap-players-row-', ''))"))
@@ -252,25 +254,47 @@ def swap(page: Page, rid: str, out_org: str, in_member: str) -> None:
     _check("Swap", result["status"], result["body"])
 
 
+def _option(page: Page, org: str):
+    """The player search's option for one member, picked by org member id to keep two same-name members apart.
+
+    Options carry that id only as their React key. This tags the matching element for a locator.
+    """
+    page.wait_for_function(
+        """org => {
+            for (const e of document.querySelectorAll('[data-cr-org]')) e.removeAttribute('data-cr-org');
+            const keyed = e => {
+                const k = Object.keys(e).find(k => k.startsWith('__reactFiber'));
+                return k && String(e[k].key) === org;
+            };
+            const hit = [...document.querySelectorAll('body > div *')].find(keyed);
+            hit?.setAttribute('data-cr-org', org);
+            return Boolean(hit);
+        }""",
+        arg=org,
+        timeout=ADD_TIMEOUT_MS,
+    )
+    return page.locator(f"[data-cr-org='{org}']")
+
+
 def edit(page: Page, rid: str, remove_orgs: list[str], adds: dict[str, str]) -> None:
     """Removes players and adds members (org id to CourtReserve name) in one save through the Edit Reservation modal."""
     _open(page, rid)
-    page.locator("[data-testid=btn-update-reservation]").click()
-    page.locator(EDIT_MODAL).wait_for(timeout=20000)
-    row = lambda org: page.locator(f"[data-testid=reservation-player-row-o{org}]")
+    page.get_by_role("button", name="Edit Reservation").click()
+    page.locator(EDIT_MODAL).wait_for(state="attached", timeout=20000)
+    # Player rows carry no id. Each removable player's Remove button carries the org member id.
+    row = lambda org: page.locator(f"[data-testid=reservation-player-remove-o{org}]")
     # The table renders after the modal opens.
-    page.locator("[data-testid^=reservation-player-row-]").first.wait_for(timeout=20000)
+    page.locator("[data-testid^=reservation-player-remove-]").first.wait_for(timeout=20000)
     for org in remove_orgs:
-        row(org).get_by_role("button", name="Remove").click()
+        row(org).click()
         row(org).wait_for(state="detached", timeout=10000)
     search = page.get_by_placeholder("Search for other player(s) to play with")
     for org, name in adds.items():
         try:
             search.fill(name)
-            # The option's id is the org member id, so two members with one name stay apart.
-            page.locator(f"[data-testid=reservation-additional-player-option-{org}]").click(timeout=10000)
+            _option(page, org).click()
             # Each add asks for confirmation before the row appears.
-            page.get_by_role("button", name="Yes").click(timeout=10000)
+            page.get_by_role("button", name="Yes").click(timeout=ADD_TIMEOUT_MS)
             row(org).wait_for(timeout=10000)
         except PlaywrightTimeoutError:
             # An ineligible player may be refused at add time with a toast. A timeout with no toast is a plain failure.
@@ -282,7 +306,7 @@ def edit(page: Page, rid: str, remove_orgs: list[str], adds: dict[str, str]) -> 
     track = lambda r: saves.append(r) if r.request.method == "POST" and "/UpdateMyReservation/" in r.url else None
     page.on("response", track)
     try:
-        page.locator("[data-testid=reservation-mobile-footer]").get_by_role("button", name="Save").click()
+        page.locator("[data-testid=reservation-mobile-submit-btn]").click()
         error = page.get_by_text(ERROR_TOAST)
         # A saved reservation closes the modal. A refused one leaves it open.
         deadline = time.time() + 30
