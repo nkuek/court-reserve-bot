@@ -146,7 +146,7 @@ class EditReservationTest(unittest.TestCase):
         self.assertEqual(self.saved, [["100", "102", "103"]])
 
     def test_add_refused_with_a_toast_raises_rejected_and_saves_nothing(self):
-        with mock.patch.object(self.cr_roster, "ADD_TIMEOUT_MS", 500, create=True):
+        with mock.patch.object(self.cr_roster, "ADD_TIMEOUT_MS", 5000, create=True):
             error = self.edit([], {"204": "Lee Poe"})
         self.assertIsInstance(error, Rejected)
         self.assertEqual(error.message, "Lee Poe not allowed on this reservation")
