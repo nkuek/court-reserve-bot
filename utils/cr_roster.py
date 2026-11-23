@@ -164,10 +164,11 @@ def _favorites(rid: str) -> set[str]:
         page = ctx.new_page()
         _attempt_login(page, os.environ["EMAIL"], os.environ["PASSWORD"])
         _open(page, rid)
-        page.get_by_role("button", name="Substitute").first.click()
-        # The Substitute page lists favorites before any search. Each row's id is the org member id.
-        page.locator("[data-testid^=swap-players-row-]").first.wait_for(timeout=15000)
-        return set(page.eval_on_selector_all("[data-testid^=swap-players-row-]", "els => els.map(e => e.dataset.testid.replace('swap-players-row-', ''))"))
+        # The mobile layout labels the button "Sub". The desktop one says "Substitute".
+        page.get_by_role("button", name=re.compile(r"^Sub(stitute)?$")).first.click()
+        # The Substitute page lists favorites before any search. Each favorite's id is the org member id.
+        page.locator("[data-testid^=swap-players-fav-]").first.wait_for(timeout=15000)
+        return set(page.eval_on_selector_all("[data-testid^=swap-players-fav-]", "els => els.map(e => e.dataset.testid.replace('swap-players-fav-', ''))"))
     finally:
         ctx.close()
 
