@@ -248,6 +248,9 @@ async def ask_booker(user: discord.abc.User, result: dict | None) -> None:
     """DMs the person who booked, after a booking that listed the court in the app."""
     if not signup_app.is_configured() or not result or not result.get("success") or not result.get("date"):
         return
+    # A private booking never reached the app, so there is no sign-up to keep or hand off.
+    if result.get("private"):
+        return
     # Bubble B courts carry a "#" ("#7A"), which the custom id templates and the app's court names leave out.
     day, court = result["date"], result.get("court_short", "").lstrip("#")
     if not court:

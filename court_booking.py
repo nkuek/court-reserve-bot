@@ -632,6 +632,7 @@ def _run_parallel_booking(
     target_time: datetime,
     booking_date_str: str,
     attempts_per_court: int = 1,
+    private: bool = False,
 ) -> bool:
     """
     Run parallel booking attempts for multiple courts.
@@ -743,7 +744,7 @@ def _run_parallel_booking(
             log.warning(f"⚠️ Duration was reduced from {duration}h to {actual_duration}h (max available for this time slot)")
         sys.stdout.flush()
         notify_success(first_success['court'], booking_date_str, reservation_time, actual_duration)
-        queue_booking_post(booking_date, target_time.hour, target_time.minute, actual_duration, first_success['court'])
+        queue_booking_post(booking_date, target_time.hour, target_time.minute, actual_duration, first_success['court'], private)
         return True
     else:
         log.error("")
@@ -878,6 +879,13 @@ def main(
             envvar="PASSWORD",
         ),
     ] = None,
+    private: Annotated[
+        bool,
+        typer.Option(
+            "--private",
+            help="Keep the booking out of the sign-up app and the WhatsApp group post.",
+        ),
+    ] = False,
 ):
     """Book a pickleball court at the specified time."""
     # Set credentials in environment for login module
@@ -1255,12 +1263,13 @@ def main(
                 "courts_tried": courts_tried_unique,
                 "offsets_tried": offsets_tried_unique,
                 "total_attempts": len(results),
+                "private": private,
             }
             print(f"===RESULT_JSON==={json.dumps(result_json)}===END_RESULT_JSON===")
             log.info(f"\n🎉 BOOKED: {first['court']}")
             sys.stdout.flush()
             notify_success(first['court'], booking_date_str, reservation_time, duration)
-            queue_booking_post(booking_date, hour, minute, duration, first['court'])
+            queue_booking_post(booking_date, hour, minute, duration, first['court'], private)
             return
         else:
             timed_out = [r for r in failures if r["response_status"] == 0]
@@ -1326,6 +1335,7 @@ def main(
             target_time=fire_target(),
             booking_date_str=booking_date_str,
             attempts_per_court=attempts_per_court,
+            private=private,
         )
 
         if success:
@@ -1375,7 +1385,7 @@ def main(
 
             # Send Discord notification (use actual duration in case it was reduced)
             notify_success(court_name, booking_date_str, reservation_time, actual_duration)
-            queue_booking_post(booking_date, hour, minute, actual_duration, court_name)
+            queue_booking_post(booking_date, hour, minute, actual_duration, court_name, private)
 
             # If we got here without throwing, we consider it a success and stop
             break

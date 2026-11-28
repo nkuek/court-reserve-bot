@@ -49,11 +49,16 @@ def post_send_time(now: datetime, start: datetime) -> datetime:
     return send_at if send_at < close else now
 
 
-def queue_booking_post(booking_date: datetime, hour: int, minute: int, duration_hours: float, court_name: str) -> None:
+def queue_booking_post(
+    booking_date: datetime, hour: int, minute: int, duration_hours: float, court_name: str, private: bool = False
+) -> None:
     """List the court in the sign-up app and queue the group's sign-up post.
 
     Never raises: the booking already succeeded.
     """
+    if private:
+        log.info(f"Private booking of {court_short_name(court_name)} on {booking_date:%a %m/%d}, skipping the sign-up app and the group post")
+        return
     if not signup_app.is_configured():
         log.info("Sign-up app not configured, skipping the group post")
         return

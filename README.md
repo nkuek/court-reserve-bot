@@ -169,6 +169,7 @@ Run bookings via Discord commands instead of the command line.
 | `/account`                    | View your registered email         |
 | `/check-availability`         | View available slots (with quick-book) |
 | `/book time:21:00 duration:2` | Book a court (court can be `5C,5D,6D`) |
+| `/book ... private:True`      | Book without listing it in the sign-up app or posting to the group |
 | `/openplay`                   | Register for open play             |
 | `/cancel`                     | Cancel a running task              |
 | `/schedule list`              | View your scheduled tasks          |

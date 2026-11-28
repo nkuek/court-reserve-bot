@@ -473,15 +473,6 @@ async def once_when_autocomplete(
 
     return choices[:25]
 
-    # Allow custom date formats
-    if not matches:
-        return [app_commands.Choice(name=current, value=current)]
-
-    return [
-        app_commands.Choice(name=f"{value} — {desc}", value=value)
-        for value, desc in matches
-    ][:25]
-
 
 def get_openplay_date_options() -> list[tuple[str, str]]:
     """Generate date options for open play (Tuesdays and Thursdays only)."""
@@ -1608,6 +1599,7 @@ async def cancel(interaction: discord.Interaction):
     date="Date to book (today, tomorrow, +3d, 12/15, or latest)",
     court="Court to book: 'any', a single court, or comma-separated priority list (e.g., '5C,6A,6B')",
     wait_until="Wait until this time before starting (e.g., 07:00)",
+    private="Keep this booking off the sign-up app and the WhatsApp group",
 )
 @app_commands.choices(duration=[
     app_commands.Choice(name="1 hour", value=1.0),
@@ -1624,6 +1616,7 @@ async def book(
     date: str = "latest",
     court: str = "any",
     wait_until: str | None = None,
+    private: bool = False,
 ):
     """Book a pickleball court."""
     # Check for user credentials
@@ -1677,6 +1670,9 @@ async def book(
         cmd.extend(["--wait-until", wait_until])
     # Otherwise, use default behavior: wait until 1 minute before reservation time
 
+    if private:
+        cmd.append("--private")
+
     # Format court for display
     if court.lower() == "any":
         court_display = "Any (auto-select)"
@@ -1698,6 +1694,8 @@ async def book(
 
     if wait_until:
         embed.add_field(name="Wait Until", value=wait_until, inline=True)
+    if private:
+        embed.add_field(name="Private", value="Not posted to the group or the sign-up app", inline=False)
 
     embed.set_footer(text="Running in background... Results will be sent via DM.")
 
